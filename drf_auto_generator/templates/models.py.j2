@@ -40,149 +40,89 @@ import uuid # Import if UUIDField is used
 class {{ table.model_name }}(models.Model):
     """Represents the '{{ table.name }}' table."""
 
-    # --- Regular Fields (derived from columns) ---
-    {# Use '-' suffix to remove newline+indentation before the field definition #}
-    {% for field in table.fields if not field.is_handled_by_relation -%} {# Render direct fields first #}
+    {# --- Regular Fields (derived from columns) --- #}
+    {% for field in table.fields if not field.is_handled_by_relation %}
     {{ field.name }} = models.{{ field.type }}({{ render_options(field.options) }})
-    {% else -%} {# Add a comment for FK fields handled by relationships #}
-    # Field '{{ field.name }}' (DB column '{{ field.original_column_name }}') is represented by a ForeignKey field below.
     {% endfor %}
 
-    # --- Relationship Fields (ManyToOne / ForeignKey) ---
-    {% for rel in table.relationships if rel.type == 'many-to-one' -%}
+    {# --- Relationship Fields (ManyToOne / ForeignKey) --- #}
+    {%- for rel in table.relationships if rel.type == 'many-to-one' %}
     {{ rel.name }} = models.ForeignKey(
         '{{ rel.target_model_name }}',
-        on_delete={{ rel.django_field_options.on_delete | default('models.CASCADE') }}, # Sensible default
-        db_column='{{ rel.django_field_options.db_column }}', # Link to original DB column
-        related_name='{{ rel.related_name }}', # For reverse access from target model
-        verbose_name='{{ rel.name|replace("_", " ")|capitalize }}', # User-friendly name
-        {%- if rel.django_field_options.null %} null=True,{% endif %}
-        {%- if rel.django_field_options.blank %} blank=True,{% endif %}
-        # help_text="Relationship to {{ rel.target_model_name }}" # Optional help text
+        on_delete={{ rel.django_field_options.on_delete | default('models.CASCADE') }},
+        db_column='{{ rel.django_field_options.db_column }}',
+        related_name='{{ rel.related_name }}',
+        verbose_name='{{ rel.name|replace("_", " ")|capitalize }}'{% if rel.django_field_options.null %},
+        null=True{% endif %}{% if rel.django_field_options.blank %},
+        blank=True{% endif %}
     )
-    {% endfor %}
+    {%- endfor %}
 
-    # --- Relationship Fields (ManyToMany - requires M2M detection in mapper) ---
-    {% for rel in table.relationships if rel.type == 'many-to-many' -%}
+    {# --- Relationship Fields (ManyToMany) --- #}
+    {%- for rel in table.relationships if rel.type == 'many-to-many' %}
     {{ rel.name }} = models.ManyToManyField(
-        '{{ rel.target_model_name }}',
-        {%- if rel.through_model_name %} # If using an explicit join table model
-        through='{{ rel.through_model_name }}',
-        # through_fields=('source_field_on_through', 'target_field_on_through'), # Specify if non-standard
-        {% elif rel.through_table %} # If only join table name known (Django can often infer)
-        db_table='{{ rel.through_table }}', # Hint for Django if needed
-        {% endif %}
+        '{{ rel.target_model_name }}',{% if rel.through_model_name %}
+        through='{{ rel.through_model_name }}',{% elif rel.through_table %}
+        db_table='{{ rel.through_table }}',{% endif %}
         related_name='{{ rel.related_name }}',
         verbose_name='{{ rel.name|replace("_", " ")|capitalize }}',
-        blank=True # M2M fields are often allowed to be blank
+        blank=True
     )
-    {% endfor %}
+    {%- endfor %}
 
-    # --- Meta Options ---
     class Meta:
-        db_table = '{{ table.name }}' # Link to the original database table name
-        managed = False # <<< IMPORTANT: Tell Django NOT to manage this table's schema (no migrations)
+        db_table = '{{ table.name }}'
+        managed = False
         verbose_name = '{{ table.model_name }}'
-        # Use inflect for better pluralization if available, else simple 's'
         verbose_name_plural = '{{ p.plural(table.model_name) if p.plural(table.model_name) else table.model_name + "s" }}'
         {% if table.primary_key_columns %}
-        # Optional: Default ordering based on primary key or another field
         # ordering = ['{{ (table.fields|selectattr('is_pk', 'equalto', True)|first).name }}']
         {% endif %}
 
-        {#
-        {% if table.unique_together %}
-        # Define multi-column unique constraints
-        unique_together = (
-            {%- for group in table.unique_together %}
-            ({{ group|map('tojson')|join(', ') }}), # Render as ('field1', 'field2')
-            {%- endfor %}
-        )
-        {% endif %}
-        #}
-
-        {# --- ADD Meta.constraints --- #}
-        {# Check if there are any constraints to render #}
         {% set constraints_to_render = table.meta_constraints|selectattr('type', 'equalto', 'unique')|list %}
         {% if constraints_to_render %}
         constraints = [
-            {# Loop through constraints, ensuring proper indentation and comma placement #}
-            {% for constraint in constraints_to_render %}
+            {% for constraint in constraints_to_render -%}
             models.UniqueConstraint(
-                fields=[{{ constraint.fields|map('tojson')|join(', ') }}],
-                name='{{ constraint.name }}'
-                # TODO: condition=...
-            ){% if not loop.last %},{% endif %} {# Add comma only if not the last item #}
+                fields=[{{ constraint.fields|map('tojson')|join(', ') }}]
+            ){% if not loop.last %},{% endif %}
             {% endfor %}
         ]
         {% endif %}
 
-        {# --- ADD Meta.indexes --- #}
-        {# Check if there are any indexes to render #}
         {% if table.meta_indexes %}
-        {% if constraints_to_render %} {# Add newline if constraints were also rendered #}
+        {% if constraints_to_render %}
 
         {% endif %}
         indexes = [
-            {# Loop through indexes, ensuring proper indentation and comma placement #}
-            {% for index in table.meta_indexes %}
+            {% for index in table.meta_indexes -%}
             models.Index(
-                fields=[{{ index.fields|map('tojson')|join(', ') }}],
-                name='{{ index.name }}'
-                # TODO: opclasses=..., condition=...
-            ){% if not loop.last %},{% endif %} {# Add comma only if not the last item #}
+                fields=[{{ index.fields|map('tojson')|join(', ') }}]
+            ){% if not loop.last %},{% endif %}
             {% endfor %}
         ]
         {% endif %}
 
-    # --- String Representation ---
     def __str__(self):
         """Return a string representation of the model instance."""
-        # Try common fields for a user-friendly representation
         {% set str_field = (table.fields|selectattr('name', 'in', ['name', 'title', 'username', 'email', 'description'])|first) %}
 
         {% if str_field %}
-        # Check if attribute exists
         if hasattr(self, '{{ str_field.name }}'):
             value = getattr(self, '{{ str_field.name }}', None)
-            # Use the value if it's not None or empty string
             if value:
                 return str(value)
         {% endif %}
 
-        # Fallback to primary key if no common field found/used or is empty
         {% set pk_field = (table.fields|selectattr('is_pk', 'equalto', True)|first) %}
-        {% if pk_field -%} {# Check if a PK field was found #}
+        {% if pk_field %}
         pk_field_name = '{{ pk_field.name }}'
-        # Check if the instance has the PK attribute
         if hasattr(self, pk_field_name):
             return f"{self._meta.verbose_name} {getattr(self, pk_field_name, 'N/A')}"
-        else: # If PK attribute doesn't exist for some reason
+        else:
             return f"{self._meta.verbose_name} object (PK not loaded)"
-        {% else %} # If no PK field was found
-        # Ultimate fallback if no common field found AND no PK field found
-        return f"{self._meta.verbose_name} object (ID: {self.pk if hasattr(self, 'pk') else 'N/A'})" # Try generic .pk
+        {% else %}
+        return f"{self._meta.verbose_name} object (ID: {self.pk if hasattr(self, 'pk') else 'N/A'})"
         {% endif %}
-
-    {# Ignoring Unhandled DB Check Constraints for now #}
-    {#
-    # --- Unhandled DB Check Constraints (Commented Out) ---
-    {# Add comments indicating DB CHECK constraints that couldn't be automatically converted #}
-    {% if table.db_check_constraints %}
-    # --- Database Check Constraints (Not automatically converted) ---
-        {%- for check in table.db_check_constraints %}
-    # TODO: Review and potentially implement Django CheckConstraint for DB constraint:
-    # Name: {{ check.name }}
-    # Definition: {{ check.definition }}
-    # Example: constraints = [ models.CheckConstraint(check=models.Q(field__gte=0), name='{{ check.name }}') ]
-        {%- endfor %}
-    # ----------------------------------------------------------------
-    {% endif %}
-    #}
-
-    # --- Other Model Methods (Optional) ---
-    # def get_absolute_url(self): ...
-    # def clean(self): ...
-    # def save(self, *args, **kwargs): ...
 
 {% endfor %}
