@@ -1,0 +1,43 @@
+# File: tests/config_templates/test_config.yaml.j2
+# Test Config - DB details will be injected by fixture
+databases:
+  default:
+    ENGINE: 'django.db.backends.postgresql'
+    NAME: "{{ db_name }}"
+    USER: "{{ db_user }}"
+    PASSWORD: "{{ db_password }}"
+    HOST: "{{ db_host }}"
+    PORT: {{ db_port }}
+    OPTIONS:
+      application_name: 'drf_generator_test'
+      # Add other options needed for testing if necessary
+      # connect_timeout: 5
+
+output_dir: "{{ output_dir }}" # Injected: Path to temp dir for generated project
+project_name: "testapi"       # Keep consistent with tests/test_generation.py
+app_name: "blog"              # Keep consistent with tests/test_generation.py
+
+# Include all tables from the test schema initially
+# include_tables:
+#   - author
+#   - post
+
+# Exclude tables not present in the test schema but often excluded
+exclude_tables:
+  - django_migrations
+  - django_content_type
+  - django_session
+  - auth_group
+  - auth_user
+
+# Test with default relation style first
+relation_style: "pk"
+
+# Include dependency discovery for potential future tests
+auto_include_dependencies: false
+
+# OpenAPI Info
+openapi_title: "Test Blog API"
+openapi_version: "0.1.0-test"
+openapi_description: "API generated during automated testing."
+openapi_server_url: "http://127.0.0.1:8001/" # Match port used in running_generated_api
