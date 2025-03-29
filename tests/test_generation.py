@@ -5,7 +5,7 @@ import pytest
 from pathlib import Path
 import yaml
 import requests
-from datetime import date
+from datetime import date, datetime
 
 # === Helper Functions (Updated create_test_post) ===
 
@@ -15,6 +15,7 @@ def create_test_author(api_client: requests.Session, name: str, email: str, bio:
     payload = {"name": name, "email": email}
     if bio is not None:
         payload["bio"] = bio
+    payload["created_at"] = f"{datetime.now().isoformat()}Z"
     try:
         response = api_client.post(url, json=payload)
         if response.status_code != 201:
@@ -24,6 +25,7 @@ def create_test_author(api_client: requests.Session, name: str, email: str, bio:
         pytest.fail(f"Setup failed: POST request to {url} failed: {e}")
     except Exception as e:
         pytest.fail(f"Setup failed: Error processing create author response: {e}")
+
 
 def create_test_post(api_client: requests.Session, title: str, slug: str, author_id: int, content: str = "", status: str = "draft", published_date: str = None, read_count: int = 0) -> dict:
     """Creates a post via API and returns the response JSON."""
@@ -40,6 +42,8 @@ def create_test_post(api_client: requests.Session, title: str, slug: str, author
     }
     if published_date:
         payload["published_date"] = published_date
+    else:
+        payload["published_date"] = f"{datetime.now().isoformat()}Z"
 
     try:
         response = api_client.post(url, json=payload)
