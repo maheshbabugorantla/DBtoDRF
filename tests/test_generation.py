@@ -43,7 +43,7 @@ def create_test_post(api_client: requests.Session, title: str, slug: str, author
     if published_date:
         payload["published_date"] = published_date
     else:
-        payload["published_date"] = f"{datetime.now().isoformat()}Z"
+        payload["published_date"] = f"{date.today().isoformat()}"
 
     try:
         response = api_client.post(url, json=payload)
