@@ -25,7 +25,7 @@ try:
     BLACK_FORMATTER_AVAILABLE = True
     # Optional: Define default Black mode (can be customized if needed)
     # BLACK_MODE = FileMode(line_length=88) # Example: default line length
-    BLACK_FORMATTER_MODE = FileMode() # Use Black's standard defaults
+    BLACK_FORMATTER_MODE = FileMode(line_length=120) # Use Black's standard defaults
 except ImportError:
     BLACK_FORMATTER_AVAILABLE = False
     BLACK_FORMATTER_MODE = None # Define to avoid NameError later
