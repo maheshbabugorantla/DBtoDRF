@@ -84,7 +84,9 @@ class {{ table.model_name }}(models.Model):
         constraints = [
             {% for constraint in constraints_to_render -%}
             models.UniqueConstraint(
-                fields=[{{ constraint.fields|map('tojson')|join(', ') }}]
+                fields=[{{ constraint.fields|map('tojson')|join(', ') }}],
+                name='{{ constraint.name }}' {# Use the actual DB constraint name #}
+                # TODO: Add condition=models.Q(...) if supported
             ){% if not loop.last %},{% endif %}
             {% endfor %}
         ]
