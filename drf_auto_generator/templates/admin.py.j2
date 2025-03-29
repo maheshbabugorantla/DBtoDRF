@@ -21,7 +21,7 @@ class {{ table.model_name }}Admin(admin.ModelAdmin):
         # Add relationship fields if desired, e.g., 'related_model_field'
     ]
     list_filter = [
-        {%- for field in table.fields if field.is_fk or field.type in ['BooleanField', 'DateField', 'DateTimeField'] -%}
+        {%- for field in table.fields if field.type in ['BooleanField', 'DateField', 'DateTimeField'] -%}
             {%- if loop.index <= 3 %} # Limit initial filters
             '{{ field.name }}',
             {%- endif -%}
