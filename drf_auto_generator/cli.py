@@ -4,7 +4,12 @@ import sys
 from typing import List
 
 # Use the Django-specific introspection module
-from drf_auto_generator.introspection_django import setup_django, introspect_schema_django, TableInfo
+from drf_auto_generator.introspection_django import (
+    setup_django,
+    introspect_schema_django,
+    TableInfo,
+)
+
 # Keep other necessary imports
 from drf_auto_generator.config import load_config
 from drf_auto_generator.mapper import build_intermediate_representation
@@ -12,9 +17,9 @@ from drf_auto_generator.openapi_gen import generate_openapi_spec, save_openapi_s
 from drf_auto_generator.codegen import generate_django_code
 
 # Configure root logger
-logging.basicConfig(level=logging.INFO, format='%(name)s:%(levelname)s: %(message)s')
+logging.basicConfig(level=logging.INFO, format="%(name)s:%(levelname)s: %(message)s")
 # Get logger for this module
-logger = logging.getLogger(__name__) # Use __name__ for module-specific logger
+logger = logging.getLogger(__name__)  # Use __name__ for module-specific logger
 
 
 def main():
@@ -23,24 +28,30 @@ def main():
         description="Generate a Django REST Framework API from an existing database schema using Django introspection."
     )
     parser.add_argument(
-        "-c", "--config",
-        help="Path to the YAML configuration file (containing Django DATABASES dict)."
+        "-c",
+        "--config",
+        help="Path to the YAML configuration file (containing Django DATABASES dict).",
     )
     parser.add_argument(
-        "-o", "--output-dir",
-        help="Directory to generate the Django project in. Overrides config file setting."
+        "-o",
+        "--output-dir",
+        help="Directory to generate the Django project in. Overrides config file setting.",
     )
     parser.add_argument(
-        "--tables", nargs='+',
-        help="Specific tables to include (space-separated). Overrides config file setting."
+        "--tables",
+        nargs="+",
+        help="Specific tables to include (space-separated). Overrides config file setting.",
     )
     parser.add_argument(
-        "--exclude-tables", nargs='+',
-        help="Tables to exclude (space-separated). Overrides config file setting."
+        "--exclude-tables",
+        nargs="+",
+        help="Tables to exclude (space-separated). Overrides config file setting.",
     )
     parser.add_argument(
-        "-v", "--verbose", action="store_true",
-        help="Enable verbose DEBUG logging for the generator tool."
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Enable verbose DEBUG logging for the generator tool.",
     )
     # Add more CLI overrides if needed (e.g., --project-name, --app-name)
 
@@ -60,34 +71,42 @@ def main():
         # 1. Load Configuration
         logger.info("Loading configuration...")
         config = load_config(args.config, args)
-        logger.debug(f"Effective configuration loaded: {config}") # Debug log the full config
+        logger.debug(
+            f"Effective configuration loaded: {config}"
+        )  # Debug log the full config
 
         # 2. Setup Django Environment (Crucial Step!)
         # This configures settings and calls django.setup()
-        setup_django(config['databases'], config['SECRET_KEY'])
+        setup_django(config["databases"], config["SECRET_KEY"])
 
         # 3. Introspect Database Schema (using Django connection)
         logger.info("Starting database schema introspection...")
         raw_schema_info: List[TableInfo] = introspect_schema_django(
             # db_alias=DEFAULT_DB_ALIAS, # Can be made configurable if needed
-            include_tables=config.get('include_tables'),
-            exclude_tables=config.get('exclude_tables')
+            include_tables=config.get("include_tables"),
+            exclude_tables=config.get("exclude_tables"),
         )
         # Check if introspection yielded any tables
         if not raw_schema_info:
-            logger.warning("Introspection did not find any tables matching the criteria. Exiting.")
-            sys.exit(0) # Exit normally if no tables found/selected
+            logger.warning(
+                "Introspection did not find any tables matching the criteria. Exiting."
+            )
+            sys.exit(0)  # Exit normally if no tables found/selected
 
         # 4. Build Intermediate Representation (Mapping)
         logger.info("Mapping database schema to intermediate representation...")
-        intermediate_repr: List[TableInfo] = build_intermediate_representation(raw_schema_info)
-        logger.debug("Intermediate representation built.") # Avoid logging the whole IR unless very verbose
+        intermediate_repr: List[TableInfo] = build_intermediate_representation(
+            raw_schema_info
+        )
+        logger.debug(
+            "Intermediate representation built."
+        )  # Avoid logging the whole IR unless very verbose
 
         # 5. Generate OpenAPI Specification
         logger.info("Generating OpenAPI specification...")
         openapi_spec = generate_openapi_spec(intermediate_repr, config)
         # Save the spec file within the generated project directory
-        save_openapi_spec(openapi_spec, config['output_dir'])
+        save_openapi_spec(openapi_spec, config["output_dir"])
 
         # 6. Generate Django Project Code
         logger.info("Generating Django project code...")
@@ -100,19 +119,27 @@ def main():
 
     # --- Error Handling ---
     except ValueError as e:
-        logger.error(f"Configuration Error: {e}", exc_info=args.verbose) # Show traceback if verbose
-        sys.exit(1) # Exit with error code
+        logger.error(
+            f"Configuration Error: {e}", exc_info=args.verbose
+        )  # Show traceback if verbose
+        sys.exit(1)  # Exit with error code
     except RuntimeError as e:
         logger.error(f"Runtime Error: {e}", exc_info=args.verbose)
         sys.exit(1)
     except ImportError as e:
-         logger.error(f"Import Error: {e}. Ensure Django and necessary database drivers are installed.", exc_info=args.verbose)
-         logger.error("Example: pip install django psycopg2-binary (for PostgreSQL)")
-         sys.exit(1)
+        logger.error(
+            f"Import Error: {e}. Ensure Django and necessary database drivers are installed.",
+            exc_info=args.verbose,
+        )
+        logger.error("Example: pip install django psycopg2-binary (for PostgreSQL)")
+        sys.exit(1)
     except Exception as e:
         # Catch any other unexpected exceptions
-        logger.error(f"An unexpected error occurred during generation: {e}", exc_info=True) # Always show traceback for unexpected
+        logger.error(
+            f"An unexpected error occurred during generation: {e}", exc_info=True
+        )  # Always show traceback for unexpected
         sys.exit(1)
+
 
 # --- Script Entry Point ---
 if __name__ == "__main__":
