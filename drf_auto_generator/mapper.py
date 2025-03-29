@@ -399,118 +399,126 @@ def analyze_relationships_django(tables: List[TableInfo], table_map: Dict[str, T
 
 
 def build_intermediate_representation(schema_infos: List[TableInfo]) -> List[TableInfo]:
-    """Processes raw schema info (from Django introspection), applies mappings & conventions."""
+    """Processes raw schema info, applies mappings & conventions, extracts meta constraints/indexes."""
     logger.info("Building intermediate representation (from Django introspection results)...")
     intermediate_repr: List[TableInfo] = []
-    # table_map: Dict[str, TableInfo] = {info.name: info for info in schema_infos}
+    table_map: Dict[str, TableInfo] = {info.name: info for info in schema_infos}
 
-    # --- First Pass: Map Tables and Columns, Prepare Field Definitions ---
+    # --- Pass 1: Map basic fields ---
     for table_info in schema_infos:
-        # Map table name to model name
         table_info.model_name = to_pascal_case(table_info.name)
         logger.info(f"Mapping table '{table_info.name}' to model '{table_info.model_name}'")
-
         django_fields = []
-        current_field_names = set()
         for col in table_info.columns:
             django_field_type, django_options = map_db_type_to_django(col)
             field_name = clean_field_name(col.name)
-            current_field_names.add(field_name)
             django_fields.append({
-                'name': field_name,                     # Cleaned Python field name
-                'type': django_field_type,              # Mapped Django Field Type (e.g., "CharField")
-                'options': django_options,              # Dict of options for the field (null, blank, max_length...)
-                'original_column_name': col.name,       # Original DB column name
+                'name': field_name,
+                'type': django_field_type,
+                'options': django_options,
+                'original_column_name': col.name,
                 'is_pk': col.is_pk,
-                'is_fk': col.is_foreign_key,            # Flag if this DB column is part of an FK
-                'is_handled_by_relation': False,        # Will be set to True later if an FK relation field covers this
-                'openapi_schema': map_db_type_to_openapi(col) # Store OpenAPI schema snippet
+                'is_fk': col.is_foreign_key,
+                'is_handled_by_relation': False, # Initial default
+                'openapi_schema': map_db_type_to_openapi(col)
             })
-
         table_info.fields = django_fields
+        intermediate_repr.append(table_info) # Add tables with basic fields mapped
 
+    # --- Pass 2: Analyze Relationships (Updates 'is_handled_by_relation' flag) ---
+    analyze_relationships_django(intermediate_repr, table_map)
+    logger.info("Relationship analysis complete.")
+
+    # --- Pass 3: Process Constraints/Indexes using final field info ---
+    logger.info("Processing constraints and indexes for Meta...")
+    for table_info in intermediate_repr: # Iterate again over the updated tables
         meta_constraints = []
         meta_indexes = []
         db_check_constraints = []
+        processed_constraint_names = set()
+        current_field_names_in_model = {f['name'] for f in table_info.fields if not f['is_handled_by_relation']}
+        current_relation_names_in_model = {r['name'] for r in table_info.relationships}
+        valid_model_field_names = current_field_names_in_model.union(current_relation_names_in_model)
 
-        processed_constraint_names = set()  # Avoid double processing the same constraint (e.g., unique index backing unique constraint)
+        # Quick lookup: original DB column -> field dict
+        col_to_field_dict_map = {f['original_column_name']: f for f in table_info.fields}
 
-        for constraint_name, constraint_data in table_info.constraints.items():
-            if constraint_name in processed_constraint_names:
-                continue
+        for constraint_name, c_data in table_info.constraints.items():
+            if constraint_name in processed_constraint_names: continue
+            columns = c_data.get('columns', [])
+            if not columns: continue
 
-            columns = constraint_data.get('columns', [])
-            if not columns or not isinstance(columns, (list, tuple)) or len(columns) == 0:
-                logger.warning(f"Skipping constraint '{constraint_name}' on table '{table_info.name}' due to missing or invalid 'columns'.")
-                continue
+            # --- Determine correct Django field names for this constraint/index ---
+            mapped_field_names_for_meta = []
+            constraint_is_valid = True
+            for original_col_name in columns:
+                field_dict = col_to_field_dict_map.get(original_col_name)
+                if not field_dict:
+                    logger.warning(f"Cannot process constraint/index '{constraint_name}' on table '{table_info.name}': Original column '{original_col_name}' has no mapped field.")
+                    constraint_is_valid = False; break
 
-            cleaned_field_names = list(map(clean_field_name, columns))
-            # Ensure all columns map to existing fields
-            if not all(cleaned_field_name in current_field_names for cleaned_field_name in cleaned_field_names):
-                logger.warning(
-                    f"Skipping constraint/index '{constraint_name}' on table '{table_info.name}': "
-                    f"Not all columns ({columns}) mapped to generated fields ({cleaned_field_names})."
-                )
-                continue
+                if field_dict['is_handled_by_relation']:
+                    # Find the corresponding relationship that handles this FK column
+                    related_rel = next((rel for rel in table_info.relationships if original_col_name in rel.get('source_columns', [])), None)
+                    if related_rel and related_rel['name'] in valid_model_field_names:
+                        mapped_field_names_for_meta.append(related_rel['name']) # Use the relationship name (e.g., author_rel)
+                    else:
+                        logger.warning(f"Cannot process constraint/index '{constraint_name}' on table '{table_info.name}': Could not find valid relationship field for FK column '{original_col_name}'.")
+                        constraint_is_valid = False; break
+                elif field_dict['name'] in valid_model_field_names:
+                     # Use the direct field name (e.g., title, status)
+                    mapped_field_names_for_meta.append(field_dict['name'])
+                else:
+                    # This case shouldn't happen if field mapping is correct
+                     logger.warning(f"Cannot process constraint/index '{constraint_name}' on table '{table_info.name}': Mapped field '{field_dict['name']}' for column '{original_col_name}' seems invalid.")
+                     constraint_is_valid = False; break
 
+            if not constraint_is_valid:
+                continue # Skip this constraint/index
 
-            is_unique = constraint_data.get('unique', False)
-            is_primary_key = constraint_data.get('primary_key', False)
-            is_foreign_key = constraint_data.get('foreign_key', False)
-            is_index = constraint_data.get('index', False)
-            is_check = constraint_data.get('check', False)
+            # Now use 'mapped_field_names_for_meta' which contains correct Django field names
+            is_unique = c_data.get('unique', False)
+            is_pk = c_data.get('primary_key', False)
+            is_fk = c_data.get('foreign_key', False)
+            is_index = c_data.get('index', False)
+            is_check = c_data.get('check', False)
 
             # 1. Handle Multi-Column Unique Constraints -> models.UniqueConstraint
-            if is_unique and not is_primary_key and not is_foreign_key and len(columns) > 1:
+            if is_unique and not is_pk and not is_fk and len(columns) > 1:
                 meta_constraints.append({
                     'type': 'unique',
-                    'fields': sorted(cleaned_field_names),
-                    'name': constraint_name,    # Use the DB constraint name
-                    # TODO: Add 'condition' if introspection provides it (Q object needed)
+                    'fields': sorted(mapped_field_names_for_meta), # Use correct field names
+                    'name': constraint_name,
                 })
                 processed_constraint_names.add(constraint_name)
-                # If this unique constraint is ALSO reported as an index, skip adding separate index below
-                if is_index:
-                    processed_constraint_names.add(constraint_name + '_idx')    # Assuming index name might be related
+                if is_index: processed_constraint_names.add(constraint_name + '_idx')
 
             # 2. Handle Indexes -> models.Index
-            if is_index and not is_primary_key and not is_foreign_key:
-                # Avoid adding index if it's just backing a single-column unique=True field
-                is_single_column_unique_field = (
-                    len(cleaned_field_names) == 1
-                    and any(f['name'] == cleaned_field_names[0]
-                    and f['options'].get('unique') for f in django_fields)
+            elif is_index and not is_pk and not is_fk:
+                is_single_col_unique_field = (
+                    len(mapped_field_names_for_meta) == 1 and
+                    any(f['name'] == mapped_field_names_for_meta[0] and f['options'].get('unique') for f in table_info.fields)
                 )
-
-                # Avoid adding index if it's backing a multi-column unique we just added
-                is_multi_column_unique_constraint = (
-                    is_unique and len(columns) > 1
-                    and(mc['name'] == constraint_name for mc in meta_constraints)
+                is_multi_col_unique_constraint = (
+                    is_unique and len(columns) > 1 and
+                    any(mc['name'] == constraint_name for mc in meta_constraints)
                 )
-                if not is_single_column_unique_field and not is_multi_column_unique_constraint:
+                if not is_single_col_unique_field and not is_multi_col_unique_constraint:
                     meta_indexes.append({
-                        'fields': cleaned_field_names, # Keep original order if possible
-                        'name': constraint_name, # Use the DB index name
-                        # TODO: Add 'opclasses', 'condition' etc. if introspection provides
+                        'fields': mapped_field_names_for_meta, # Use correct field names
+                        'name': constraint_name, # Keep DB name for index object
                     })
                     processed_constraint_names.add(constraint_name)
 
-            # 3. Handle Check Constraints -> models.CheckConstraint
-            if is_check:
-                db_check_constraints.append({
-                     'name': constraint_name,
-                     'definition': constraint_data.get('definition', 'Unknown check expression') # Backend dependent
-                })
-                processed_constraint_names.add(constraint_name)
+            # 3. Note DB Check Constraints
+            elif is_check:
+                 db_check_constraints.append({ 'name': constraint_name, 'definition': c_data.get('definition', '?')})
+                 processed_constraint_names.add(constraint_name)
 
+        # Update the TableInfo object
         table_info.meta_constraints = meta_constraints
         table_info.meta_indexes = meta_indexes
         table_info.db_check_constraints = db_check_constraints
 
-        intermediate_repr.append(table_info) # Add table with basic field mappings
-
-    # --- Second Pass: Analyze Relationships between mapped tables ---
-    analyze_relationships_django(intermediate_repr, {t.name: t for t in intermediate_repr})
-
-    logger.info("Intermediate representation built (including meta constraints/indexes where possible) successfully.")
+    logger.info("Intermediate representation processing complete.")
     return intermediate_repr
