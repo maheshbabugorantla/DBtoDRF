@@ -1,0 +1,65 @@
+# File: pyproject.toml
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+include-package-data = true
+packages = ["drf_auto_generator"]
+# package-data = {
+#     include = ["drf_auto_generator/templates/*"],
+#     exclude = ["drf_auto_generator/templates/node_modules/*"],
+# }
+
+[project]
+name = "drf-auto-generator"
+version = "0.2.0" # Version using Django introspection
+description = "Tool to automatically generate a Django REST Framework API from a database schema using Django introspection."
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+authors = [
+    { name = "Mahesh Babu Gorantla", email = "maheshbabugorantla@gmail.com" },
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Software Development :: Code Generators",
+    "Topic :: Database",
+    "Framework :: Django",
+    "Framework :: Django REST Framework",
+]
+dependencies = [
+    "django == 4.2.20", # Core dependency now
+    "djangorestframework >= 3.13",
+    "drf-spectacular >= 0.24",
+    "PyYAML >= 6.0",
+    "jinja2 >= 3.0",
+    "inflect >= 7.0", # For pluralization
+    "pydantic >= 2.10",
+    "black >= 25.0",
+]
+
+[project.scripts]
+drf-generate = "drf_auto_generator.cli:main"
+
+[project.optional-dependencies]
+# List drivers Django might need - user must install the correct one(s)
+postgres = ["psycopg2-binary"]
+mysql = ["mysqlclient"] # Or other compatible mysql drivers
+mssql = ["django-mssql-backend", "pyodbc"] # Example, check current recommendations
+dev = [
+    'ipython',
+    'pdbpp',
+    "black",
+    "flake8",
+    "mypy",
+    "pytest",
+    "isort",
+    "pre-commit",
+    "pre-commit-hooks",
+    "ruff",
+    "python-dotenv",
+]

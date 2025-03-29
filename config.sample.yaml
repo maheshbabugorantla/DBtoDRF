@@ -1,0 +1,49 @@
+# File: config.sample.yaml
+
+# Django DATABASES setting dictionary
+# See: https://docs.djangoproject.com/en/stable/ref/settings/#databases
+# Use the 'default' key for the database to introspect.
+databases:
+  default:
+    ENGINE: 'django.db.backends.postgresql' # Or mysql, sqlite3, mssql, etc.
+    NAME: 'your_db_name'
+    USER: 'your_user'
+    PASSWORD: 'your_password'
+    HOST: 'localhost' # Or your DB host
+    PORT: '5432'      # Or your DB port
+    # Add OPTIONS if needed, e.g., for SQL Server driver
+    # OPTIONS: {
+    #     'driver': 'ODBC Driver 17 for SQL Server',
+    # }
+
+# Directory where the Django project will be generated
+output_dir: "./generated_api_django"
+
+# Optional: Specify tables to include (defaults to all if not provided)
+# include_tables:
+#   - users
+#   - products
+
+# Optional: Specify tables to exclude
+# exclude_tables:
+#   - django_migrations
+#   - django_content_type
+#   - django_session
+#   - auth_group
+#   - auth_user # etc.
+
+# Django project and app naming
+project_name: "myapi_django"
+app_name: "api"
+
+# Add Whitenoise to serve static files
+add_whitenoise: false
+
+# Relationship style for serializers ('pk', 'link', 'nested' - implement 'pk' first)
+relation_style: "pk"
+
+# OpenAPI Specification Info
+openapi_title: "My Django-Introspected API"
+openapi_version: "1.0.0"
+openapi_description: "API generated automatically from the database schema using Django introspection."
+openapi_server_url: "http://127.0.0.1:8000/" # Base URL for the API server

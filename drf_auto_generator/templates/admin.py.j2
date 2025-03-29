@@ -1,0 +1,39 @@
+from django.contrib import admin
+
+# Import models from this app
+from .models import {% for table in tables -%}
+    {{- table.model_name -}}
+    {%- if not loop.last %},{% endif -%}
+{%- endfor %}
+
+# Register your models here to make them accessible in the Django admin site.
+
+{% for table in tables %}
+@admin.register({{ table.model_name }})
+class {{ table.model_name }}Admin(admin.ModelAdmin):
+    # Customize the admin interface for each model
+    list_display = [
+        {%- for field in table.fields if not field.is_handled_by_relation or field.is_pk -%}
+            {%- if loop.index <= 5 %} # Limit initial display fields
+            '{{ field.name }}',
+            {%- endif -%}
+        {%- endfor -%}
+        # Add relationship fields if desired, e.g., 'related_model_field'
+    ]
+    list_filter = [
+        {%- for field in table.fields if field.is_fk or field.type in ['BooleanField', 'DateField', 'DateTimeField'] -%}
+            {%- if loop.index <= 3 %} # Limit initial filters
+            '{{ field.name }}',
+            {%- endif -%}
+        {%- endfor -%}
+    ]
+    search_fields = [
+        {%- for field in table.fields if field.type in ['CharField', 'TextField', 'EmailField'] -%}
+             {%- if loop.index <= 3 %} # Limit initial search fields
+             '{{ field.name }}',
+             {%- endif -%}
+        {%- endfor -%}
+    ]
+    # Add other admin customizations like 'readonly_fields', 'fieldsets', etc.
+    # readonly_fields = ['id', 'created_at'] # Example
+{% endfor %}

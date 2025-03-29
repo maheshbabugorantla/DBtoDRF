@@ -1,0 +1,58 @@
+# File: drf_auto_generator/templates/.gitignore.sample.j2
+# Git ignore file for the generated {{ project_name }} project
+
+# Environment files
+.env
+.env.*
+!.env.sample
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+venv/
+venv_*/
+.venv
+.venv_*/
+env/
+env.*/
+ENV/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+downloads/
+*.so
+
+# Static files collected by collectstatic
+staticfiles/ # If using default STATIC_ROOT name
+
+# Media files
+mediafiles/ # If using default MEDIA_ROOT name
+
+# Database files (e.g., SQLite)
+*.sqlite3
+db.sqlite3
+*.sql
+
+# IDE / Editor specific files
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Log files
+*.log
+logs/
+
+# Coverage reports
+.coverage
+htmlcov/
