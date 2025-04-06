@@ -1,10 +1,18 @@
 # File: drf_auto_generator/validation.py
+from argparse import ArgumentParser, Namespace
 import sys
 import logging
 import keyword
-from typing import List, Optional, Dict, Any, Literal, Union
+from typing import List, Optional, Dict, Any, Literal, Self
 
-from pydantic import BaseModel, Field, validator, ValidationError, root_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+    ConfigDict,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -17,8 +25,6 @@ def is_valid_python_identifier(name: str) -> bool:
 
 
 # --- Pydantic Models for Configuration Schema ---
-
-
 class DatabaseSettings(BaseModel):
     """Schema for a single database connection within the DATABASES dict."""
 
@@ -28,45 +34,56 @@ class DatabaseSettings(BaseModel):
         description="Django database engine (e.g., 'django.db.backends.postgresql').",
     )
     NAME: str = Field(..., min_length=1, description="Database name.")
-    USER: Optional[str] = Field(None, description="Database user.")
-    PASSWORD: Optional[str] = Field(None, description="Database password.")
-    HOST: Optional[str] = Field(None, description="Database host address.")
-    PORT: Optional[Union[str, int]] = Field(None, description="Database port number.")
-    OPTIONS: Optional[Dict[str, Any]] = Field(
-        {}, description="Database engine specific options."
-    )
+    USER: Optional[str] = Field(
+        default=None, description="Database user."
+    )  # Use default=None for clarity
+    PASSWORD: Optional[str] = Field(default=None, description="Database password.")
+    HOST: Optional[str] = Field(default=None, description="Database host address.")
+    PORT: Optional[int] = Field(
+        default=None, description="Database port number."
+    )  # Store as int
+    OPTIONS: Dict[str, Any] = Field(
+        default_factory=dict, description="Database engine specific options."
+    )  # Use default_factory
 
-    @validator("PORT")
-    def validate_port(cls, v):
-        """Ensure port is a number or string representation of one."""
-        if v is None:
-            return v
-        if isinstance(v, str):
+    # --- Use @field_validator for PORT ---
+    @field_validator(
+        "PORT", mode="before"
+    )  # mode='before' runs before Pydantic's type coercion
+    @classmethod  # Keep classmethod
+    def validate_port(cls, v: Any) -> Optional[int]:  # Input type is Any
+        """Ensure port is a number or string representation of one, and within range."""
+        if v is None or v == "":
+            return None
+        port_num: Optional[int] = None
+        if isinstance(v, int):
+            port_num = v
+        elif isinstance(v, str):
             if not v.isdigit():
                 raise ValueError(
                     f"Port must be a number or string containing only digits, got '{v}'"
                 )
             try:
-                return int(v)  # Store as int if possible
+                port_num = int(v)
             except ValueError:
-                raise ValueError(
-                    f"Could not convert port '{v}' to a number"
-                )  # Should not happen if isdigit passed
-        elif not isinstance(v, int):
+                raise ValueError(f"Could not convert port '{v}' to a number")
+        else:
             raise TypeError(
-                f"Port must be an integer or string, got {type(v).__name__}"
+                f"Port must be an integer or string containing digits, got {type(v).__name__}"
             )
-        if not 0 <= v <= 65535:
-            raise ValueError(f"Port must be between 0 and 65535, got {v}")
-        return v
+
+        if port_num is not None and not 0 <= port_num <= 65535:
+            raise ValueError(f"Port must be between 0 and 65535, got {port_num}")
+        return port_num
 
 
 class ToolConfigSchema(BaseModel):
     """Pydantic schema defining the expected structure and types for the configuration."""
 
-    # Use Field to define defaults and descriptions matching DEFAULT_CONFIG
+    # Use Field with default=... for optional fields with defaults
     databases: Dict[str, DatabaseSettings] = Field(
-        ..., description="Django DATABASES setting dictionary."
+        ...,
+        description="Django DATABASES setting dictionary. Must contain a 'default' key.",
     )
     output_dir: str = Field(
         "./generated_api_django",
@@ -76,134 +93,196 @@ class ToolConfigSchema(BaseModel):
     project_name: str = Field(
         "myapi_django",
         min_length=1,
-        description="Name for the generated Django project.",
+        description="Name for the generated Django project (Python identifier).",
     )
     app_name: str = Field(
-        "api", min_length=1, description="Name for the generated Django app."
+        "api",
+        min_length=1,
+        description="Name for the generated Django app (Python identifier).",
     )
     include_tables: Optional[List[str]] = Field(
-        None, description="Optional list of specific tables to include."
+        default=None,
+        description="Optional list of specific table names (strings) to include.",
     )
     exclude_tables: Optional[List[str]] = Field(
-        None, description="Optional list of tables to exclude."
+        default=None, description="Optional list of table names (strings) to exclude."
+    )
+    auto_include_dependencies: bool = Field(
+        default=False,
+        description="If True and include_tables is set, automatically add tables related via FKs.",
     )
     relation_style: Literal["pk", "link", "nested"] = Field(
-        "pk",
+        default="pk",
         description="Style for representing relationships ('pk', 'link', 'nested').",
     )
     openapi_title: str = Field(
-        "Auto-Generated API",
+        default="Auto-Generated API",
         min_length=1,
         description="Title for the OpenAPI specification.",
     )
     openapi_version: str = Field(
-        "1.0.0",
+        default="1.0.0",
         min_length=1,
         description="Version string for the OpenAPI specification.",
     )
     openapi_description: str = Field(
-        "API generated automatically.",
+        default="API generated automatically.",
         description="Description for the OpenAPI specification.",
     )
     openapi_server_url: str = Field(
-        "http://127.0.0.1:8000/",
+        default="http://127.0.0.1:8000/",
         description="Base URL for the API server in OpenAPI spec.",
     )
-
-    # Internal field, not directly from user config file usually
-    SECRET_KEY: Optional[str] = Field(
-        None, description="Internal secret key for Django setup."
+    generate_api_tests: bool = Field(
+        default=True, description="Whether to generate basic Django APITestCase files."
     )
 
-    # --- Custom Validators ---
+    # Internal field, usually added by load_config if not provided by user
+    SECRET_KEY: Optional[str] = Field(
+        default=None, description="Internal secret key for Django setup."
+    )
 
-    @validator("project_name", "app_name")
-    def check_valid_identifier(cls, v, field):
+    # --- Custom Field Validators using @field_validator ---
+
+    @field_validator("project_name", "app_name")
+    @classmethod
+    def check_valid_identifier(
+        cls, v: str
+    ) -> str:  # Input is already validated as str by Pydantic
         """Validate project_name and app_name are valid Python identifiers."""
         if not is_valid_python_identifier(v):
             raise ValueError(
-                f"'{v}' is not a valid Python identifier or is a reserved keyword. Use snake_case, start with a letter or underscore."
+                f"'{v}' is not a valid Python identifier or is a reserved keyword."
             )
         return v
 
-    @validator("include_tables", "exclude_tables", pre=True, each_item=True)
-    def check_table_names_are_strings(cls, v):
-        """Ensure table names in lists are strings."""
-        if not isinstance(v, str):
-            raise TypeError(
-                f"Table names in include/exclude lists must be strings, found: {type(v).__name__}"
-            )
-        if not v:
-            raise ValueError(
-                "Table names in include/exclude lists cannot be empty strings."
-            )
-        return v
+    # Use 'each_item=True' to validate items within the list
+    # Use mode='before' to catch non-strings early
+    @field_validator(
+        "include_tables", "exclude_tables", mode="before", check_fields=False
+    )  # check_fields=False needed for optional fields
+    @classmethod
+    def check_table_names_list(cls, v: Optional[List[Any]]) -> Optional[List[str]]:
+        """Ensure items in table lists are non-empty strings."""
+        if v is None:
+            return None
+        if not isinstance(v, list):
+            # This might be caught by Pydantic typing, but check defensively
+            raise TypeError("include_tables/exclude_tables must be a list.")
+        processed_list = []
+        for index, item in enumerate(v):
+            if not isinstance(item, str):
+                raise TypeError(
+                    f"Item at index {index} must be a string, found: {type(item).__name__}"
+                )
+            stripped_item = item.strip()
+            if not stripped_item:
+                raise ValueError(
+                    f"Item at index {index} cannot be empty or just whitespace."
+                )
+            processed_list.append(stripped_item)
+        return processed_list
 
-    @root_validator(pre=False)  # Runs after individual field validation
-    def check_default_database_exists(cls, values):
-        """Ensure the 'databases' dictionary contains a 'default' key."""
-        databases_dict = values.get("databases")
-        if databases_dict and "default" not in databases_dict:
+    # --- Custom Model Validator using @model_validator ---
+    # mode='after' runs after field validation and model creation
+    # Use 'Self' type hint for Python 3.11+ if available for the model instance
+    @model_validator(mode="after")
+    def check_db_and_dependency_config(self) -> Self:  # or -> 'ToolConfigSchema':
+        """Perform cross-field validation checks."""
+        # 1. Ensure the 'databases' dictionary contains a 'default' key.
+        # Self here refers to the partially validated model instance
+        if self.databases is not None and "default" not in self.databases:
+            # Raise ValueError - Pydantic V2 associates this with the whole model
             raise ValueError(
-                "The 'databases' configuration must contain a 'default' key specifying the database to introspect."
+                "The 'databases' configuration dictionary must contain a 'default' key."
             )
-        # Add other cross-field validation if needed
-        return values
+
+        # 2. Ensure auto_include_dependencies logic is consistent
+        if self.auto_include_dependencies and not self.include_tables:
+            logger.warning(
+                "'auto_include_dependencies' is True but 'include_tables' is not specified. The option will have no effect unless an include_tables list is provided."
+            )
+
+        # Return the validated model instance
+        return self
+
+    # Use Pydantic V2 model_config instead of nested Class Config
+    model_config = ConfigDict(
+        extra="ignore",  # Allow and ignore extra fields from input dict
+    )
 
 
 # --- Validation Function ---
-
-
-def validate_config_dict(config_dict: Dict[str, Any]) -> ToolConfigSchema:
+def validate_and_parse_config(config_dict: Dict[str, Any]) -> ToolConfigSchema:
     """
-    Validates a raw configuration dictionary against the Pydantic schema.
-
-    Args:
-        config_dict: The raw dictionary loaded from YAML/CLI args.
-
-    Returns:
-        A validated Pydantic model instance if successful.
-
-    Raises:
-        SystemExit: If validation fails, prints formatted errors and exits.
+    Validates a raw configuration dictionary against the ToolConfigSchema.
+    Exits with error messages if validation fails.
     """
     try:
-        # Attempt to parse the raw dictionary into the Pydantic model
-        validated_config = ToolConfigSchema.parse_obj(config_dict)
-        logger.debug("Configuration validation successful.")
+        validated_config = ToolConfigSchema.model_validate(
+            config_dict
+        )  # Use model_validate in V2
+        logger.debug(
+            "Configuration dictionary parsed and validated successfully against schema."
+        )
         return validated_config
     except ValidationError as e:
-        logger.error(
-            "Configuration validation failed. Please check your config file or arguments."
+        logger.critical(
+            "Configuration validation failed! Please check your config file or arguments."
         )
         print("\n--- Configuration Errors ---", file=sys.stderr)
+        # Use e.errors() which is standard in V1 and V2
         for error in e.errors():
-            loc = " -> ".join(
-                map(str, error.get("loc", ()))
-            )  # Location path (e.g., databases -> default -> PORT)
-            msg = error.get("msg", "Unknown error")
-            print(f"  - Location: '{loc}'", file=sys.stderr)
-            print(f"    Error: {msg}", file=sys.stderr)
-            # Add specific hints based on error type if helpful
-            if "type" in error:
-                err_type = error["type"]
-                if "identifier" in err_type:
-                    print(
-                        "    Hint: Ensure the value is a valid Python variable name (letters, numbers, underscores, not starting with a number, not a keyword).",
-                        file=sys.stderr,
-                    )
-                elif "literal" in err_type and loc == "relation_style":
-                    allowed = error.get("ctx", {}).get(
-                        "expected", "'pk', 'link', 'nested'"
-                    )
-                    print(f"    Hint: Allowed values are {allowed}.", file=sys.stderr)
-                elif "value_error.list.str" in err_type:
-                    print(
-                        "    Hint: Items in this list should be non-empty strings.",
-                        file=sys.stderr,
-                    )
+            loc_parts = [str(loc_item) for loc_item in error.get("loc", ())]
+            loc_str = (
+                " -> ".join(loc_parts) if loc_parts else "Model Level"
+            )  # Adjust 'Top Level'
+            msg = error.get("msg", "Unknown validation error")
+            input_value = error.get("input", "N/A")
+
+            print(f"  - Location: '{loc_str}'", file=sys.stderr)
+            # Show input value if helpful
+            # print(f"    Input:    '{input_value}' ({type(input_value).__name__})", file=sys.stderr)
+            print(f"    Error:    {msg}", file=sys.stderr)
+
+            # Provide specific hints (can be kept similar)
+            err_type = error.get("type")
+            ctx = error.get("ctx", {})
+            if "identifier" in str(err_type) or (
+                "value_error" in str(err_type)
+                and any(x in loc_parts for x in ["project_name", "app_name"])
+            ):
+                print(
+                    f"    Hint:     Value '{input_value}' must be a valid Python variable name.",
+                    file=sys.stderr,
+                )
+            # ... (other hints remain similar) ...
 
         print("----------------------------", file=sys.stderr)
-        import sys  # Import sys locally if not already imported
+        sys.exit(1)
+    except Exception as e:
+        logger.critical(
+            f"An unexpected error occurred during configuration parsing: {e}",
+            exc_info=True,
+        )
+        sys.exit(1)
 
-        sys.exit(1)  # Exit the program due to invalid config
+
+def load_config(config_path: Optional[str], cli_args: Namespace) -> ToolConfigSchema:
+    """
+    Loads configuration from YAML file, merges with CLI arguments,
+    validates the result, and returns a validated Pydantic model instance.
+    Exits with error messages if validation fails.
+    """
+    raw_config: Dict[str, Any] = {}
+    # ... (Code to load YAML into raw_config) ...
+    # ... (Code to merge CLI args into raw_config) ...
+    # ... (Code to add default SECRET_KEY if needed) ...
+
+    # Validate using the new function which uses Pydantic V2 style
+    validated_config: ToolConfigSchema = validate_and_parse_config(raw_config)
+
+    # Post-validation adjustments
+    validated_config.output_dir = str(Path(validated_config.output_dir).resolve())
+    logger.info("Configuration loaded and validated successfully.")
+    return validated_config

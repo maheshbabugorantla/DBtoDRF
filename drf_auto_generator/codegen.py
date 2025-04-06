@@ -1,9 +1,8 @@
 import logging
 import os
-import shutil
 import stat  # For setting file permissions
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Set
 from jinja2 import (
     Environment,
     FileSystemLoader,
@@ -14,6 +13,8 @@ from inflect import engine as inflect_engine
 
 # Import from the new Django introspection module
 from .introspection_django import TableInfo
+from .config_validation import ToolConfigSchema
+from .test_codegen_utils import _get_faker_value, _generate_invalid_value
 
 logger = logging.getLogger(__name__)
 
@@ -202,6 +203,186 @@ def setup_project_structure(
     logger.info("Basic project structure and core files generated.")
 
 
+def generate_django_tests(
+    ir_list: List[TableInfo], config: ToolConfigSchema, app_path: Path, env: Environment
+):
+    """Generates APITestCase files for each model in the IR."""
+    logger.info(f"Generating Django test files for app '{config.app_name}'...")
+    test_dir = app_path / "tests"
+    test_dir.mkdir(exist_ok=True)
+
+    # Create __init__.py if it doesn't exist
+    init_file = test_dir / "__init__.py"
+    if not init_file.exists():
+        init_file.touch()
+
+    # Model Lookup Dictionary (model_name -> TableInfo)
+    model_lookup: Dict[str, TableInfo] = {table.model_name: table for table in ir_list}
+
+    # Generate one test file per table/model
+    for table in ir_list:
+        logger.info(f"Generating tests for model: {table.model_name}")
+
+        # --- Prepare Context for the Template ---
+        model_name = table.model_name
+        table_name = table.name  # Used for URL reversing basename
+
+        # Identify related models needed for ForeignKey setup
+        related_models_needed: Set[str] = set()
+        create_payload_fields: Dict[str, Dict] = {}
+        patch_payload_fields: List[Dict] = []
+        invalid_payload_fields: Dict[str, str] = {}
+        pk_field_name = "pk"  # Default lookup field
+
+        # Collect fields needed for payload generation (exclude read-only like PK)
+        # Also determine which related models need creation
+        for field in table.fields:
+            if field["is_pk"] or field["options"].get("primary_key"):
+                # Use the actual PK field name if not default 'id'/'pk'
+                # This assumes single PK for simplicity in tests
+                if not field["type"].startswith("AutoField") and not field[
+                    "type"
+                ].startswith("BigAutoField"):
+                    pk_field_name = field["name"]
+                continue  # Skip PKs for payload
+
+            # Skip fields likely auto-set (like created_at, updated_at - needs better detection)
+            if field["name"] in [
+                "created_at",
+                "updated_at",
+                "creation_date",
+                "modified_date",
+            ]:
+                continue
+
+            field_details = {
+                "key": field["name"],
+                "type": field["type"],
+                "options": field["options"],
+                "is_fk": field["is_fk"],
+                "is_unique": field["options"].get("unique", False),
+                "needs_unique_value": field["options"].get("unique", False)
+                or field["type"] == "SlugField",  # Need unique slugs too
+                "related_model": None,
+                "fake_value": None,
+                "unique_fake_value": None,
+            }
+
+            if field["is_fk"]:
+                # Find the related model name from relationships
+                related_rel = next(
+                    (
+                        rel
+                        for rel in table.relationships
+                        if field["original_column_name"]
+                        in rel.get("source_columns", [])
+                    ),
+                    None,
+                )
+                if related_rel:
+                    field_details["key"] = related_rel[
+                        "name"
+                    ]  # Use relation name for payload key
+                    field_details["related_model"] = related_rel["target_model_name"]
+                    related_models_needed.add(related_rel["target_model_name"])
+                    # Value will be set in template using related instance PK
+                else:
+                    logger.warning(
+                        f"Could not determine related model for FK field '{field['name']}' in {model_name}. Skipping for payload."
+                    )
+                    continue  # Skip if relation details missing
+            else:
+                # Generate fake data for non-FK fields
+                field_details["fake_value"] = _get_faker_value(
+                    field["type"], field["options"], unique=False
+                )
+                if field_details["needs_unique_value"]:
+                    field_details["unique_fake_value"] = _get_faker_value(
+                        field["type"], field["options"], unique=True
+                    )
+                else:
+                    field_details["unique_fake_value"] = field_details[
+                        "fake_value"
+                    ]  # Use same value if unique not needed
+
+            create_payload_fields[field_details["key"]] = field_details
+            patch_payload_fields.append(
+                field_details
+            )  # Add all writable fields as candidates for patching
+            # Generate invalid data for required fields or fields with constraints
+            if not field["options"].get("null", True) or field["options"].get(
+                "unique", False
+            ):  # Example: generate invalid for required/unique
+                invalid_payload_fields[field_details["key"]] = _generate_invalid_value(
+                    field["type"]
+                )
+
+        related_models_setup_data = {}
+        for related_model_name in related_models_needed:
+            related_table = model_lookup.get(related_model_name)
+            if related_table:
+                related_fields_payload = {}
+                has_required_fields = False
+                for rel_field in related_table.fields:
+                    # Include only required, non-PK, non-FK fields for basic creation
+                    is_required = not rel_field["options"].get("null", True)
+                    is_pk = rel_field["is_pk"] or rel_field["options"].get(
+                        "primary_key"
+                    )
+                    is_fk = rel_field["is_fk"]
+                    # Basic check: needs improvement for defaults etc.
+                    if is_required and not is_pk and not is_fk:
+                        related_fields_payload[rel_field["name"]] = _get_faker_value(
+                            rel_field["type"],
+                            rel_field["options"],
+                            unique=rel_field["options"].get("unique", False),
+                        )
+                        has_required_fields = True
+                    elif (
+                        not is_pk and not is_fk
+                    ):  # Include optional fields too if needed? For now, only required.
+                        pass
+
+                if not related_fields_payload and has_required_fields:
+                    logger.warning(
+                        f"Could not generate required fields for related model {related_model_name} setup."
+                    )
+                    # Store empty dict to indicate potential failure in template
+                    related_models_setup_data[related_model_name] = {}
+                else:
+                    related_models_setup_data[related_model_name] = (
+                        related_fields_payload
+                    )
+
+            else:
+                logger.warning(
+                    f"Could not find related model '{related_model_name}' in IR for test setup."
+                )
+
+        context = {
+            "model_name": model_name,
+            "table_name": table_name,  # Basename for reverse
+            "app_name": config.app_name,
+            "related_models_needed": sorted(list(related_models_needed)),
+            # Provide related models that need creation in setUpTestData
+            "related_models_to_create": related_models_setup_data,
+            # Fields for creating a valid instance (excluding PKs, read-only)
+            "create_payload_fields": create_payload_fields,
+            # Fields that can be potentially patched (non-FK, non-PK, non-readonly)
+            "patch_payload_fields": [f for f in patch_payload_fields if not f["is_fk"]],
+            # Fields with intentionally invalid data for 400 tests
+            "invalid_payload_fields": invalid_payload_fields,
+            "pk_field_name": pk_field_name,  # Primary key field name for response checks
+        }
+
+        # Generate the test file
+        output_filename = f"test_api_{table.name}.py"
+        output_path = test_dir / output_filename
+        generate_file_from_template(env, "api_test.py.j2", context, output_path)
+
+    logger.info("Django test file generation complete.")
+
+
 def generate_django_code(ir_list: List[TableInfo], config: Dict[str, Any]):
     """Orchestrates the generation of all Django code files."""
     output_dir = config["output_dir"]
@@ -278,6 +459,15 @@ def generate_django_code(ir_list: List[TableInfo], config: Dict[str, Any]):
         env, "requirements.txt.j2", req_context, Path(output_dir) / "requirements.txt"
     )
 
+    # 9. Generate Django API Tests
+    generate_api_tests_flag = config.dict().get("generate_api_tests", True)
+    if generate_api_tests_flag:
+        generate_django_tests(ir_list, config, app_path, env)
+    else:
+        logger.info(
+            "Skipping Django API Tests generation. Please set 'generate_api_tests' to True in your config to enable."
+        )
+
     logger.info(
         f"Django project '{project_name}' generated successfully in '{output_dir}'"
     )
@@ -303,10 +493,19 @@ def generate_django_code(ir_list: List[TableInfo], config: Dict[str, Any]):
     )
     logger.info("6. Collect static files: python manage.py collectstatic")
     logger.info("7. Run Django migrations: python manage.py migrate")
-    logger.info("8. Run the production server (example using Gunicorn):")
-    logger.info(f"   gunicorn {project_name}.wsgi:application --bind 0.0.0.0:8000")
-    logger.info("   (Or run the development server: python manage.py runserver)")
-    logger.info(
-        "9. Access the API docs at: http://<your_host>:8000/api/schema/swagger-ui/"
-    )
+    if generate_api_tests_flag:
+        logger.info(f"8. Run the API tests: python manage.py test {app_name}.tests")
+        logger.info("9. Run the production server (example using Gunicorn):")
+        logger.info(f"   gunicorn {project_name}.wsgi:application --bind 0.0.0.0:8000")
+        logger.info("   (Or run the development server: python manage.py runserver)")
+        logger.info(
+            "10. Access the API docs at: http://<your_host>:8000/api/schema/swagger-ui/"
+        )
+    else:
+        logger.info("8. Run the production server (example using Gunicorn):")
+        logger.info(f"   gunicorn {project_name}.wsgi:application --bind 0.0.0.0:8000")
+        logger.info("   (Or run the development server: python manage.py runserver)")
+        logger.info(
+            "9. Access the API docs at: http://<your_host>:8000/api/schema/swagger-ui/"
+        )
     logger.info("--------------------------------------------------")
