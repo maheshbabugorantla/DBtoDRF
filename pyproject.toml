@@ -40,6 +40,8 @@ dependencies = [
     "inflect >= 7.0", # For pluralization
     "pydantic >= 2.10",
     "black >= 25.0",
+    "Faker >= 37.0.0",
+    "astor >= 0.8.1",
 ]
 
 [project.scripts]
@@ -63,4 +65,5 @@ dev = [
     "pre-commit-hooks",
     "ruff",
     "python-dotenv",
+    "Faker",
 ]
