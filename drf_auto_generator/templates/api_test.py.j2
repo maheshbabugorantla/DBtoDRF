@@ -14,7 +14,7 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 
 # Import the model being tested and any related models needed for setup
-from ..models import {{ model_name }}{% for related_model in related_models_needed %}, {{ related_model }}{% endfor %}
+from {{ app_name }}.models import {{ model_name }}{% for related_model in related_models_needed %}, {{ related_model }}{% endfor %}
 
 # Import Faker for data generation within tests
 from faker import Faker
@@ -29,6 +29,11 @@ User = get_user_model()
 model_name = '{{ model_name }}'
 table_name = '{{ table_name }}'
 app_name = '{{ app_name }}'
+
+# Payload fields
+create_payload_fields = {{ create_payload_fields|safe }}
+patch_payload_fields = {{ patch_payload_fields|safe }}
+invalid_payload_fields = {{ invalid_payload_fields|safe }}
 
 class {{ model_name }}APITests(APITestCase):
     """
@@ -60,7 +65,6 @@ class {{ model_name }}APITests(APITestCase):
             try:
                 instance_data = {
                     {%- for field, fake_value in fields_to_create.items() %}
-                    # Ensure fake values are correctly represented and escaped
                     '{{ field }}': {{ fake_value|safe }}{% if not loop.last %},{% endif %}
                     {%- endfor %}
                 }
@@ -98,27 +102,27 @@ class {{ model_name }}APITests(APITestCase):
         try:
             create_data = {}
             valid_payload_possible = True
-            {% for field_name, field_details in create_payload_fields.items() -%}
-                {# Check if this field represents a Foreign Key #}
-                {% if field_details['is_fk'] -%}
-                    related_list_name = 'related_{{ field_details['related_model']|tojson|safe|lower }}s'
-                # Check if the required related object(s) were successfully created in setUpTestData
-                if hasattr(self, related_list_name) and getattr(self, related_list_name):
-                    # Assign the PK of the first related object found
-                    create_data['{{ field_name }}'] = getattr(self, related_list_name)[0].pk
+            {% for field_name, field_details in create_payload_fields.items() %}
+            {# Check if this field represents a Foreign Key #}
+            {% if field_details.is_fk %}
+            related_list_name = 'related_{{ field_details.related_model|lower }}s'
+            # Check if the required related object(s) were successfully created in setUpTestData
+            if hasattr(self, related_list_name) and getattr(self, related_list_name):
+                # Assign the PK of the first related object found
+                create_data['{{ field_name }}'] = getattr(self, related_list_name)[0].pk
+            else:
+                # Check if this FK is required (not nullable)
+                is_fk_required = {{ not field_details.options.get('null', True) }}
+                if is_fk_required:
+                    print("WARNING (setUp): Skipping {{ model_name }} instance creation: Required related '{{ field_details.related_model }}' for '{{ field_name }}' not available from setUpTestData.")
+                    valid_payload_possible = False # Cannot create instance without required FK
                 else:
-                    # Check if this FK is required (not nullable)
-                    is_required_fk = not {{ field_details['options'].get('null', True)|string|lower == 'true' }}
-                    if is_required_fk:
-                        print("WARNING (setUp): Skipping {{ model_name }} instance creation: Required related '{{ field_details['related_model'] }}' for '{{ field_name }}' not available from setUpTestData.")
-                        valid_payload_possible = False # Cannot create instance without required FK
-                    else:
-                        # If FK is nullable, simply omit it from the creation data
-                        print("INFO (setUp): Omitting nullable FK field '{{ field_name }}' for {{ model_name }} as related object not available.")
-                {% else %}
-                # Assign non-FK field using its pre-generated fake value (already repr'd)
-                create_data['{{ field_name }}'] = {{ field_details['fake_value']|safe }}
-                {% endif %}
+                    # If FK is nullable, simply omit it from the creation data
+                    print("INFO (setUp): Omitting nullable FK field '{{ field_name }}' for {{ model_name }} as related object not available.")
+            {% else %}
+            # Assign non-FK field using its pre-generated fake value (already repr'd)
+            create_data['{{ field_name }}'] = {{ field_details.fake_value|safe }}
+            {% endif %}
             {% endfor %}
 
             # Only attempt final creation if all required FKs were resolved
@@ -127,32 +131,41 @@ class {{ model_name }}APITests(APITestCase):
                 final_create_data = {k: v for k, v in create_data.items() if v is not None}
                 required_ok = True
                 # Final check for any other missing non-nullable fields (basic check)
-                {% for field_name, field_details in create_payload_fields.items() if not field_details['options'].get('null', True) and not field_details['options'].get('blank', True) %}
+                {% for field_name, field_details in create_payload_fields.items() %}
+                {% if not field_details.options.get('null', True) and not field_details.options.get('blank', True) %}
                 if '{{ field_name }}' not in final_create_data:
                     # Check if it was omitted because it was a required FK that failed setup
-                    if not ({{ field_details['is_fk'] }} and not (hasattr(self, 'related_{{ field_details['related_model']|tojson|safe|lower }}s') and getattr(self, 'related_{{ field_details['related_model']|tojson|safe|lower }}s'))):
+                    if not ({{ field_details.is_fk }} and not (hasattr(self, 'related_{{ field_details.related_model|lower }}s') and getattr(self, 'related_{{ field_details.related_model|lower }}s'))):
                         print("WARNING (setUp): Final payload missing required field '{{ field_name }}' for {{ model_name }}.")
                         required_ok = False
+                {% endif %}
                 {% endfor %}
 
                 # Proceed only if required fields seem present and payload is not empty
                 if required_ok and final_create_data:
-                     self.test_instance = {{ model_name }}.objects.create(**final_create_data)
-                     self.test_instance_pk = self.test_instance.pk
-                     print("INFO (setUp): Created self.test_instance for {{ model_name }} with PK {}.".format(self.test_instance_pk))
+                    self.test_instance = {{ model_name }}.objects.create(**final_create_data)
+                    self.test_instance_pk = self.test_instance.pk
+                    print("INFO (setUp): Created self.test_instance for {{ model_name }} with PK {}.".format(self.test_instance_pk))
                 else:
-                     if not required_ok: print("WARNING (setUp): Could not create {{ model_name }} due to missing required fields in final payload.")
-                     elif not final_create_data: print("WARNING (setUp): Could not create {{ model_name }} because final payload was empty.")
-                     self.test_instance = None; self.test_instance_pk = None
+                    if not required_ok:
+                        print("WARNING (setUp): Could not create {{ model_name }} due to missing required fields in final payload.")
+                    elif not final_create_data:
+                        print("WARNING (setUp): Could not create {{ model_name }} because final payload was empty.")
+                    self.test_instance = None
+                    self.test_instance_pk = None
             else:
-                if not valid_payload_possible: print("INFO (setUp): Did not attempt {{ model_name }} creation because required FKs were missing.")
-                else: print("INFO (setUp): Did not attempt {{ model_name }} creation because initial create_data was empty.")
-                self.test_instance = None; self.test_instance_pk = None
+                if not valid_payload_possible:
+                    print("INFO (setUp): Did not attempt {{ model_name }} creation because required FKs were missing.")
+                else:
+                    print("INFO (setUp): Did not attempt {{ model_name }} creation because initial create_data was empty.")
+                self.test_instance = None
+                self.test_instance_pk = None
 
         except Exception as e:
             # Use standard string formatting for exception message
             print("WARNING (setUp): Failed to create self.test_instance for {{ model_name }}. Error: {}".format(e))
-            self.test_instance = None; self.test_instance_pk = None
+            self.test_instance = None
+            self.test_instance_pk = None
         {% else %}
         # Cannot generate payload automatically
         print("INFO (setUp): Skipping creation of self.test_instance for {{ model_name }}: No payload fields generated.")
@@ -168,49 +181,50 @@ class {{ model_name }}APITests(APITestCase):
         payload = {}
         {% for field_name, field_details in create_payload_fields.items() %}
         # Check explicit kwargs override first
-        if '{{ field_name }}' in kwargs:
+        if {{ field_name|tojson }} in kwargs:
             payload['{{ field_name }}'] = kwargs['{{ field_name }}']
-            continue
 
-        {% if field_details['is_fk'] %}
-            # Use the first related instance created in class setup if available
-            related_list_name = 'related_{{ field_details['related_model']|tojson|safe|lower }}s'
-            if hasattr(self.__class__, related_list_name) and getattr(self.__class__, related_list_name): # Check on class for setUpTestData
-                payload['{{ field_name }}'] = getattr(self.__class__, related_list_name)[0].pk
-            else:
-                # Omit FK if related instance doesn't exist (API call might fail if required)
-                pass
+        {% if field_details.is_fk %}
+        # Use the first related instance created in class setup if available
+        related_list_name = 'related_{{ field_details.related_model|lower }}s'
+        if hasattr(self.__class__, related_list_name) and getattr(self.__class__, related_list_name): # Check on class for setUpTestData
+            payload['{{ field_name }}'] = getattr(self.__class__, related_list_name)[0].pk
+        else:
+            # Omit FK if related instance doesn't exist (API call might fail if required)
+            pass
         {% else %}
-            # Generate value, potentially making it unique if requested
-            # Use the pre-generated repr string for uniqueness logic if needed
-            fake_value_repr = '{{ field_details["unique_fake_value"]|safe if field_details["needs_unique_value"] else field_details["fake_value"]|safe }}'
-            is_unique_needed = {{ 'True' if field_details['needs_unique_value'] else 'False' }}
+        # Generate value, potentially making it unique if requested
+        # Use the pre-generated repr string for uniqueness logic if needed
+        fake_value_repr = {{ field_details.unique_fake_value|safe|tojson if field_details.needs_unique_value else field_details.fake_value|safe|tojson }}
+        is_unique_needed = {{ 'True' if field_details.needs_unique_value else 'False' }}
 
-            if unique_suffix_override and is_unique_needed:
-                try:
-                    # Attempt to get base value by evaluating the standard fake value repr
-                    base_value = eval('{{ field_details["fake_value"]|safe }}')
-                    if isinstance(base_value, str):
-                        unique_val = f"{base_value}_{unique_suffix_override}"
-                        # Truncate if necessary based on model field options
-                        max_len = {{ field_details['options'].get('max_length')|default('None') }}
-                        if max_len is not None: unique_val = unique_val[:max_len]
-                        payload['{{ field_name }}'] = unique_val
-                    elif isinstance(base_value, (int, float, Decimal)):
-                        # For numbers, simple addition might work for uniqueness in tests, but could overflow
-                        payload['{{ field_name }}'] = base_value + int(unique_suffix_override)
-                    else: # Fallback for other types, use unique repr directly
-                        payload['{{ field_name }}'] = eval('{{ field_details["unique_fake_value"]|safe }}')
-                except Exception as e_eval_unique:
-                    print("WARNING (_generate_valid_payload): Failed to eval unique value for {}, using fallback. Error: {}".format('{{ field_name }}', e_eval_unique))
-                    # Fallback: append suffix to string representation
-                    payload['{{ field_name }}'] = f"{fake_value_repr.strip('\'\"')}_{unique_suffix_override}"
+        if unique_suffix_override and is_unique_needed:
+            try:
+                # Attempt to get base value by evaluating the standard fake value repr
+                base_value = eval({{ field_details.fake_value|safe|tojson }})
+                if isinstance(base_value, str):
+                    unique_val = f"{base_value}_{unique_suffix_override}"
+                    # Truncate if necessary based on model field options
+                    max_len = {{ field_details.options.get('max_length')|default('None') }}
+                    if max_len is not None:
+                        unique_val = unique_val[:max_len]
+                    payload['{{ field_name }}'] = unique_val
+                elif isinstance(base_value, (int, float, Decimal)):
+                    # For numbers, simple addition might work for uniqueness in tests, but could overflow
+                    payload['{{ field_name }}'] = base_value + int(unique_suffix_override)
+                else: # Fallback for other types, use unique repr directly
+                    payload['{{ field_name }}'] = eval({{ field_details.unique_fake_value|safe }})
+            except Exception as e_eval_unique:
+                print("WARNING (_generate_valid_payload): Failed to eval unique value for {}, using fallback. Error: {}".format('{{ field_name }}', e_eval_unique))
+                # Fallback: append suffix to string representation
+                payload['{{ field_name }}'] = f"{fake_value_repr.strip('\'\"')}_{unique_suffix_override}"
         else:
             # Use standard fake value (non-unique needed or no suffix provided)
-            try: payload['{{ field_name }}'] = eval('{{ field_details["fake_value"]|safe }}')
+            try:
+                payload['{{ field_name }}'] = eval({{ field_details.fake_value|safe }})
             except Exception as e_eval:
-                 print("WARNING (_generate_valid_payload): Failed to eval standard value for {}, using fallback. Error: {}".format('{{ field_name }}', e_eval))
-                 payload['{{ field_name }}'] = '{{ field_details["fake_value"]|safe }}'.strip("'\"") # Fallback to plain string
+                print("WARNING (_generate_valid_payload): Failed to eval standard value for {}, using fallback. Error: {}".format('{{ field_name }}', e_eval))
+                payload['{{ field_name }}'] = "{{ field_details.fake_value|safe }}".strip("'\"") # Fallback to plain string
         {% endif %}
         {% endfor %}
 
@@ -246,9 +260,11 @@ class {{ model_name }}APITests(APITestCase):
             self.skipTest(f"Cannot generate valid payload for creating {model_name}.")
 
         # Check if required related objects were available for payload generation
-        {% for field_name, field_details in create_payload_fields.items() if field_details['is_fk'] and not field_details['options'].get('null', True) %}
+        {% for field_name, field_details in create_payload_fields.items() %}
+        {% if field_details.is_fk and not field_details.options.get('null', True) %}
         if '{{ field_name }}' not in payload:
             self.skipTest("Skipping create test: Setup failed for required related object '{}'.".format('{{ field_details.related_model }}'))
+        {% endif %}
         {% endfor %}
 
         response = self.client.post(list_url, payload, format='json')
@@ -298,15 +314,17 @@ class {{ model_name }}APITests(APITestCase):
         detail_url = reverse('{{ app_name }}:{{ table_name }}-detail', kwargs={'pk': self.test_instance_pk})
         unique_suffix = str(int(time.time() * 1000))[-5:]
         payload = self._generate_valid_payload(unique_suffix_override=unique_suffix)
-        field_to_check = next((details['key'] for details in create_payload_fields.values() if not details['is_fk']), None)
+        field_to_check = next((field for field, details in create_payload_fields.items() if not details.is_fk), None)
 
         if not payload or not field_to_check:
              self.skipTest("Cannot generate valid payload or find field to check for updating {}.".format('{{ model_name }}'))
 
         # Ensure required FKs are in the PUT payload
-        {% for field_name, field_details in create_payload_fields.items() if field_details['is_fk'] and not field_details['options'].get('null', True) %}
+        {% for field_name, field_details in create_payload_fields.items() %}
+        {% if field_details.is_fk and not field_details.options.get('null', True) %}
         if '{{ field_name }}' not in payload:
             self.skipTest("Skipping update test: Cannot generate payload with required FK '{{ field_name }}'.")
+        {% endif %}
         {% endfor %}
 
         response = self.client.put(detail_url, payload, format='json')
@@ -327,7 +345,7 @@ class {{ model_name }}APITests(APITestCase):
         """PATCH /api/{{ table_name }}/{pk}/ - Verify partial update returns 200."""
         if not self.test_instance_pk:
             self.skipTest("Skipping patch test for {}: test_instance not created.".format('{{ model_name }}'))
-        patch_candidates = {{ patch_payload_fields|list|safe }} # Get list of possible fields
+        patch_candidates = {{ patch_payload_fields|safe }} # Get list of possible fields
         if not patch_candidates:
             self.skipTest("Skipping patch test for {}: No patchable fields identified.".format('{{ model_name }}'))
 
@@ -339,7 +357,7 @@ class {{ model_name }}APITests(APITestCase):
         patch_value_repr = field_to_patch_details['unique_fake_value'] if field_to_patch_details['needs_unique_value'] else field_to_patch_details['fake_value']
         try:
             patch_value = eval(patch_value_repr)
-        except:
+        except Exception:
             patch_value = patch_value_repr.strip("'\"") # Fallback
         payload = { patch_field_key: patch_value }
 
@@ -364,21 +382,24 @@ class {{ model_name }}APITests(APITestCase):
              unique_suffix = str(int(time.time() * 1000))[-5:]
              delete_payload = self._generate_valid_payload(unique_suffix_override=unique_suffix)
              if not delete_payload:
-                self.skipTest(f"Cannot gen payload for delete setup.")
+                self.skipTest("Cannot gen payload for delete setup.")
              # Check required FKs
              required_fks_ok = True
-             {% for field_name, field_details in create_payload_fields.items() if field_details['is_fk'] and not field_details['options'].get('null', True) %}
-             if '{{ field_name }}' not in delete_payload: required_fks_ok = False
+             {% for field_name, field_details in create_payload_fields.items() %}
+             {% if field_details.is_fk and not field_details.options.get('null', True) %}
+             if '{{ field_name }}' not in delete_payload:
+                required_fks_ok = False
+             {% endif %}
              {% endfor %}
              if required_fks_ok:
                 instance_to_delete = {{ model_name }}.objects.create(**delete_payload)
                 pk_to_delete = instance_to_delete.pk
              else:
-                self.skipTest(f"Cannot create instance for delete: missing required FKs.")
+                self.skipTest("Cannot create instance for delete: missing required FKs.")
         except Exception as e:
-            self.fail(f"Failed to create instance for delete test: {e}")
+            self.fail("Failed to create instance for delete test: {}".format(e))
         {% else %}
-        self.skipTest(f"Cannot auto-generate payload for delete test setup.")
+        self.skipTest("Cannot auto-generate payload for delete test setup.")
         {% endif %}
 
         if pk_to_delete:
@@ -431,7 +452,6 @@ class {{ model_name }}APITests(APITestCase):
         self.assertTrue(any(key in reported_errors for key in invalid_keys_sent),
                         "Expected validation error for one of {}, but errors were on: {}".format(
                             list(invalid_keys_sent), list(reported_errors)))
-
     {% endif %}
 
     # --- Test Unauthenticated Access ---
@@ -452,9 +472,11 @@ class {{ model_name }}APITests(APITestCase):
         if not payload:
             self.skipTest("Cannot generate payload for unauthenticated create test.")
         # Check required FKs
-        {% for field_name, field_details in create_payload_fields.items() if field_details['is_fk'] and not field_details['options'].get('null', True) %}
+        {% for field_name, field_details in create_payload_fields.items() %}
+        {% if field_details.is_fk and not field_details.options.get('null', True) %}
         if '{{ field_name }}' not in payload:
             self.skipTest("Skipping unauth create: missing required FK '{{ field_name }}'.")
+        {% endif %}
         {% endfor %}
 
         self.client.logout() # Ensure client is logged out

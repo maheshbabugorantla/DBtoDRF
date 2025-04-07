@@ -12,7 +12,7 @@ fake = Faker()  # Initialize faker instance
 
 def _get_faker_value(
     field_type: str, options: Dict[str, Any], unique: bool = False
-) -> str:
+) -> Any:
     """Generate a plausible fake value based on Django field type and options."""
     # Use repr() to get string representation suitable for templates
     max_len = options.get("max_length")
@@ -32,9 +32,9 @@ def _get_faker_value(
     elif field_type in ["SlugField"]:
         # Generate slug from words, ensuring uniqueness if needed
         slug_base = fake.slug(number_of_words=3)
-        return repr(f"{slug_base}-{unique_suffix}" if unique else slug_base)[
-            : max_len or 50
-        ]  # Limit slug length
+        if unique:
+            slug_base = f"{slug_base}-{unique_suffix}"
+        return slug_base[: max_len or 50]  # Limit slug length
     elif field_type in ["CharField"]:
         # Generate reasonably short text, add suffix if unique needed
         if max_len and max_len <= 15:
