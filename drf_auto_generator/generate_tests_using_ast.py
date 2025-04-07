@@ -460,6 +460,7 @@ class TestCaseGenerator:
         self.endpoint_analyzer = endpoint_analyzer
         self.schema_analyzer = schema_analyzer
         self.api_base = api_base
+
     def _create_import_statements(self) -> List[ast.stmt]:
         """Create import statements for the test file."""
         imports = [
@@ -493,6 +494,22 @@ class TestCaseGenerator:
                 ],
                 level=0
             ),
+            # Import User model for authentication
+            ast.ImportFrom(
+                module='django.contrib.auth',
+                names=[
+                    ast.alias(name='get_user_model', asname=None),
+                ],
+                level=0
+            ),
+            # Import Token for token authentication
+            ast.ImportFrom(
+                module='rest_framework.authtoken.models',
+                names=[
+                    ast.alias(name='Token', asname=None),
+                ],
+                level=0
+            ),
         ]
         return imports
 
@@ -520,7 +537,7 @@ class TestCaseGenerator:
             body=[
                 ast.Expr(
                     value=ast.Constant(
-                        value=f"Set up test case for {resource_name} API tests.",
+                        value=f"Set up test case for {resource_name} API tests with authentication.",
                         kind=None
                     )
                 ),
@@ -539,6 +556,107 @@ class TestCaseGenerator:
                         keywords=[]
                     )
                 ),
+                # Create a test user for authentication
+                ast.Assign(
+                    targets=[
+                        ast.Name(id='User', ctx=ast.Store())
+                    ],
+                    value=ast.Call(
+                        func=ast.Name(id='get_user_model', ctx=ast.Load()),
+                        args=[],
+                        keywords=[]
+                    )
+                ),
+                ast.Assign(
+                    targets=[
+                        ast.Attribute(
+                            value=ast.Name(id='self', ctx=ast.Load()),
+                            attr='username',
+                            ctx=ast.Store()
+                        )
+                    ],
+                    value=ast.Constant(value='testuser', kind=None)
+                ),
+                ast.Assign(
+                    targets=[
+                        ast.Attribute(
+                            value=ast.Name(id='self', ctx=ast.Load()),
+                            attr='email',
+                            ctx=ast.Store()
+                        )
+                    ],
+                    value=ast.Constant(value='testuser@example.com', kind=None)
+                ),
+                ast.Assign(
+                    targets=[
+                        ast.Attribute(
+                            value=ast.Name(id='self', ctx=ast.Load()),
+                            attr='password',
+                            ctx=ast.Store()
+                        )
+                    ],
+                    value=ast.Constant(value='TestPassword123!', kind=None)
+                ),
+                ast.Assign(
+                    targets=[
+                        ast.Attribute(
+                            value=ast.Name(id='self', ctx=ast.Load()),
+                            attr='user',
+                            ctx=ast.Store()
+                        )
+                    ],
+                    value=ast.Call(
+                        func=ast.Attribute(
+                            value=ast.Name(id='User', ctx=ast.Load()),
+                            attr='objects.create_user',
+                            ctx=ast.Load()
+                        ),
+                        args=[],
+                        keywords=[
+                            ast.keyword(
+                                arg='username',
+                                value=ast.Constant(value='testuser', kind=None)
+                            ),
+                            ast.keyword(
+                                arg='email',
+                                value=ast.Constant(value='testuser@example.com', kind=None)
+                            ),
+                            ast.keyword(
+                                arg='password',
+                                value=ast.Constant(value='TestPassword123!', kind=None)
+                            ),
+                        ]
+                    )
+                ),
+                # Create token for this user
+                ast.Assign(
+                    targets=[
+                        ast.Attribute(
+                            value=ast.Name(id='self', ctx=ast.Load()),
+                            attr='token',
+                            ctx=ast.Store()
+                        )
+                    ],
+                    value=ast.Call(
+                        func=ast.Attribute(
+                            value=ast.Name(id='Token', ctx=ast.Load()),
+                            attr='objects.create',
+                            ctx=ast.Load()
+                        ),
+                        args=[],
+                        keywords=[
+                            ast.keyword(
+                                arg='user',
+                                value=ast.Attribute(
+                                    value=ast.Name(id='self', ctx=ast.Load()),
+                                    attr='user',
+                                    ctx=ast.Load()
+                                )
+                            )
+                        ]
+                    )
+                ),
+                # Setup Django API Test Client
                 ast.Assign(
                     targets=[
                         ast.Attribute(
@@ -557,7 +675,7 @@ class TestCaseGenerator:
                         keywords=[]
                     )
                 ),
-                # Add authentication setup later if needed
+                # Setup API Base Path
                 ast.Assign(
                     targets=[
                         ast.Attribute(
@@ -569,6 +687,36 @@ class TestCaseGenerator:
                     value=ast.Constant(
                         value=self.api_base,
                         kind=None
+                    )
+                ),
+                # Create authentication headers with token
+                ast.Assign(
+                    targets=[
+                        ast.Attribute(
+                            value=ast.Name(id='self', ctx=ast.Load()),
+                            attr='auth_headers',
+                            ctx=ast.Store()
+                        )
+                    ],
+                    value=ast.Dict(
+                        keys=[
+                            ast.Constant(value='Authorization', kind=None),
+                        ],
+                        values=[
+                            ast.BinOp(
+                                left=ast.Constant(value='Token ', kind=None),
+                                op=ast.Add(),
+                                right=ast.Attribute(
+                                    value=ast.Attribute(
+                                        value=ast.Name(id='self', ctx=ast.Load()),
+                                        attr='token',
+                                        ctx=ast.Load()
+                                    ),
+                                    attr='key',
+                                    ctx=ast.Load()
+                                )
+                            ),
+                        ]
                     )
                 ),
             ],
@@ -601,6 +749,22 @@ class TestCaseGenerator:
                         kind=None
                     )
                 ),
+                # Cleanup user
+                ast.Expr(
+                    value=ast.Call(
+                        func=ast.Attribute(
+                            value=ast.Attribute(
+                                value=ast.Name(id='self', ctx=ast.Load()),
+                                attr='user',
+                                ctx=ast.Load()
+                            ),
+                            attr='delete',
+                            ctx=ast.Load()
+                        ),
+                        args=[],
+                        keywords=[]
+                    )
+                ),
                 ast.Expr(
                     value=ast.Call(
                         func=ast.Attribute(
@@ -620,6 +784,26 @@ class TestCaseGenerator:
             decorator_list=[],
             returns=None
         )
+
+    def _add_auth_headers_to_request(self, request_node: ast.Call) -> ast.Call:
+        """Add authentication headers to a request call node."""
+        for keyword in request_node.keywords:
+            if keyword.arg == 'headers':
+                # Headers parameter already exists, update it
+                return request_node
+
+        # Add headers parameter
+        request_node.keywords.append(
+            ast.keyword(
+                arg='headers',
+                value=ast.Attribute(
+                    value=ast.Name(id='self', ctx=ast.Load()),
+                    attr='auth_headers',
+                    ctx=ast.Load()
+                )
+            )
+        )
+        return request_node
 
     def _generate_request_data_assignment(self, resource_name: str, operation: Dict) -> ast.Assign:
         """
@@ -716,9 +900,9 @@ class TestCaseGenerator:
         return path_params[0]
 
     def _create_test_create_method(self, resource_name: str, create_op: Dict,
-                              retrieve_op: Optional[Dict] = None) -> ast.FunctionDef:
+                                  retrieve_op: Optional[Dict] = None) -> ast.FunctionDef:
         """
-        Create a test method for the create operation.
+        Create a test method for the create operation with authentication.
 
         Args:
             resource_name: Name of the resource
@@ -741,7 +925,7 @@ class TestCaseGenerator:
         sample_data = self.schema_analyzer.generate_request_data(create_op['operation'])
         body.append(self._generate_request_data_assignment(resource_name, create_op['operation']))
 
-        # Add POST request
+        # Add POST request with authentication
         body.extend([
             ast.Assign(
                 targets=[
@@ -755,7 +939,7 @@ class TestCaseGenerator:
                     ),
                     op=ast.Add(),
                     right=ast.Constant(
-                        value=f"{create_op['path'].split('<')[0]}/",  # Remove any path params
+                        value=f"{create_op['path'].split('<')[0]}/",
                         kind=None
                     )
                 )
@@ -785,6 +969,14 @@ class TestCaseGenerator:
                         ast.keyword(
                             arg='format',
                             value=ast.Constant(value='json', kind=None)
+                        ),
+                        ast.keyword(
+                            arg='headers',
+                            value=ast.Attribute(
+                                value=ast.Name(id='self', ctx=ast.Load()),
+                                attr='auth_headers',
+                                ctx=ast.Load()
+                            )
                         )
                     ]
                 )
@@ -865,14 +1057,13 @@ class TestCaseGenerator:
             )
         )
 
-        # If retrieve operation is available, add verification
+        # If retrieve operation is available, add verification with authentication
         if retrieve_op:
             # Find the primary key parameter in the retrieve path
             pk_param = self._find_primary_key_param(retrieve_op['path'], retrieve_op['operation'])
             if not pk_param:
                 pk_param = 'id'  # Default if not found
 
-            # FIX: Changed path format handling to use proper string formatting
             body.extend([
                 ast.Expr(
                     value=ast.Constant(
@@ -894,7 +1085,6 @@ class TestCaseGenerator:
                         right=ast.Call(
                             func=ast.Attribute(
                                 value=ast.Constant(
-                                    # FIX: Use proper format pattern with braces
                                     value=f"{retrieve_op['path'].replace(f'<{pk_param}>', '{}')}/",
                                     kind=None
                                 ),
@@ -925,7 +1115,16 @@ class TestCaseGenerator:
                         args=[
                             ast.Name(id='detail_url', ctx=ast.Load())
                         ],
-                        keywords=[]
+                        keywords=[
+                            ast.keyword(
+                                arg='headers',
+                                value=ast.Attribute(
+                                    value=ast.Name(id='self', ctx=ast.Load()),
+                                    attr='auth_headers',
+                                    ctx=ast.Load()
+                                )
+                            )
+                        ]
                     )
                 ),
                 ast.Expr(
@@ -1049,7 +1248,7 @@ class TestCaseGenerator:
 
     def _create_test_list_method(self, resource_name: str, list_op: Dict) -> ast.FunctionDef:
         """
-        Create a test method for listing resources.
+        Create a test method for listing resources with authentication.
 
         Args:
             resource_name: Name of the resource
@@ -1099,7 +1298,16 @@ class TestCaseGenerator:
                     args=[
                         ast.Name(id='url', ctx=ast.Load())
                     ],
-                    keywords=[]
+                    keywords=[
+                        ast.keyword(
+                            arg='headers',
+                            value=ast.Attribute(
+                                value=ast.Name(id='self', ctx=ast.Load()),
+                                attr='auth_headers',
+                                ctx=ast.Load()
+                            )
+                        )
+                    ]
                 )
             ),
             ast.Expr(
@@ -1248,7 +1456,7 @@ class TestCaseGenerator:
 
     def _create_test_retrieve_method(self, resource_name: str, retrieve_op: Dict, create_op: Optional[Dict] = None) -> ast.FunctionDef:
         """
-        Create a test method for retrieving a resource.
+        Create a test method for retrieving a resource with authentication.
 
         Args:
             resource_name: Name of the resource
@@ -1286,7 +1494,7 @@ class TestCaseGenerator:
             # Add request data
             body.append(self._generate_request_data_assignment(resource_name, create_op['operation']))
 
-            # Add create request
+            # Add create request with authentication
             body.extend([
                 ast.Assign(
                     targets=[
@@ -1300,7 +1508,7 @@ class TestCaseGenerator:
                         ),
                         op=ast.Add(),
                         right=ast.Constant(
-                            value=f"{create_op['path'].split('<')[0]}/",  # Remove path params
+                            value=f"{create_op['path'].split('<')[0]}/",
                             kind=None
                         )
                     )
@@ -1330,6 +1538,14 @@ class TestCaseGenerator:
                             ast.keyword(
                                 arg='format',
                                 value=ast.Constant(value='json', kind=None)
+                            ),
+                            ast.keyword(
+                                arg='headers',
+                                value=ast.Attribute(
+                                    value=ast.Name(id='self', ctx=ast.Load()),
+                                    attr='auth_headers',
+                                    ctx=ast.Load()
+                                )
                             )
                         ]
                     )
@@ -1376,8 +1592,7 @@ class TestCaseGenerator:
                 )
             )
 
-        # Add retrieve request
-        # FIX: Changed path format handling to use proper string formatting
+        # Add retrieve request with authentication
         body.extend([
             ast.Assign(
                 targets=[
@@ -1393,7 +1608,6 @@ class TestCaseGenerator:
                     right=ast.Call(
                         func=ast.Attribute(
                             value=ast.Constant(
-                                # FIX: Use proper format pattern with braces
                                 value=f"{retrieve_op['path'].replace(f'<{pk_param}>', '{}')}/",
                                 kind=None
                             ),
@@ -1424,7 +1638,16 @@ class TestCaseGenerator:
                     args=[
                         ast.Name(id='retrieve_url', ctx=ast.Load())
                     ],
-                    keywords=[]
+                    keywords=[
+                        ast.keyword(
+                            arg='headers',
+                            value=ast.Attribute(
+                                value=ast.Name(id='self', ctx=ast.Load()),
+                                attr='auth_headers',
+                                ctx=ast.Load()
+                            )
+                        )
+                    ]
                 )
             ),
             ast.Expr(
@@ -1505,11 +1728,13 @@ class TestCaseGenerator:
             returns=None
         )
 
-    def _create_test_update_method(self, resource_name: str, update_op: Dict,
-                            create_op: Optional[Dict] = None,
-                            retrieve_op: Optional[Dict] = None) -> ast.FunctionDef:
+    def _create_test_update_method(
+        self, resource_name: str, update_op: Dict,
+        create_op: Optional[Dict] = None,
+        retrieve_op: Optional[Dict] = None
+    ) -> ast.FunctionDef:
         """
-        Create a test method for updating a resource.
+        Create a test method for updating a resource with authentication.
 
         Args:
             resource_name: Name of the resource
@@ -1551,7 +1776,7 @@ class TestCaseGenerator:
             # Add request data
             body.append(self._generate_request_data_assignment(resource_name, create_op['operation']))
 
-            # Add create request
+            # Add create request with authentication
             body.extend([
                 ast.Assign(
                     targets=[
@@ -1565,7 +1790,7 @@ class TestCaseGenerator:
                         ),
                         op=ast.Add(),
                         right=ast.Constant(
-                            value=f"{create_op['path'].split('<')[0]}/",  # Remove path params
+                            value=f"{create_op['path'].split('<')[0]}/",
                             kind=None
                         )
                     )
@@ -1595,6 +1820,14 @@ class TestCaseGenerator:
                             ast.keyword(
                                 arg='format',
                                 value=ast.Constant(value='json', kind=None)
+                            ),
+                            ast.keyword(
+                                arg='headers',
+                                value=ast.Attribute(
+                                    value=ast.Name(id='self', ctx=ast.Load()),
+                                    attr='auth_headers',
+                                    ctx=ast.Load()
+                                )
                             )
                         ]
                     )
@@ -1730,8 +1963,7 @@ class TestCaseGenerator:
                 )
             )
 
-        # Add update request
-        # FIX: Changed path format handling to use proper string formatting
+        # Add update request with authentication
         body.extend([
             ast.Assign(
                 targets=[
@@ -1747,7 +1979,6 @@ class TestCaseGenerator:
                     right=ast.Call(
                         func=ast.Attribute(
                             value=ast.Constant(
-                                # FIX: Use proper format pattern with braces
                                 value=f"{update_op['path'].replace(f'<{pk_param}>', '{}')}/",
                                 kind=None
                             ),
@@ -1786,6 +2017,14 @@ class TestCaseGenerator:
                         ast.keyword(
                             arg='format',
                             value=ast.Constant(value='json', kind=None)
+                        ),
+                        ast.keyword(
+                            arg='headers',
+                            value=ast.Attribute(
+                                value=ast.Name(id='self', ctx=ast.Load()),
+                                attr='auth_headers',
+                                ctx=ast.Load()
+                            )
                         )
                     ]
                 )
@@ -1821,7 +2060,6 @@ class TestCaseGenerator:
             if not retrieve_pk_param:
                 retrieve_pk_param = 'id'  # Default if not found
 
-            # FIX: Changed path format handling to use proper string formatting
             body.extend([
                 ast.Expr(
                     value=ast.Constant(
@@ -1843,7 +2081,6 @@ class TestCaseGenerator:
                         right=ast.Call(
                             func=ast.Attribute(
                                 value=ast.Constant(
-                                    # FIX: Use proper format pattern with braces
                                     value=f"{retrieve_op['path'].replace(f'<{retrieve_pk_param}>', '{}')}/",
                                     kind=None
                                 ),
@@ -1874,7 +2111,16 @@ class TestCaseGenerator:
                         args=[
                             ast.Name(id='retrieve_url', ctx=ast.Load())
                         ],
-                        keywords=[]
+                        keywords=[
+                            ast.keyword(
+                                arg='headers',
+                                value=ast.Attribute(
+                                    value=ast.Name(id='self', ctx=ast.Load()),
+                                    attr='auth_headers',
+                                    ctx=ast.Load()
+                                )
+                            )
+                        ]
                     )
                 ),
                 ast.Expr(
@@ -1960,11 +2206,13 @@ class TestCaseGenerator:
             returns=None
         )
 
-    def _create_test_delete_method(self, resource_name: str, delete_op: Dict,
-                            create_op: Optional[Dict] = None,
-                            retrieve_op: Optional[Dict] = None) -> ast.FunctionDef:
+    def _create_test_delete_method(
+        self, resource_name: str, delete_op: Dict,
+        create_op: Optional[Dict] = None,
+        retrieve_op: Optional[Dict] = None
+    ) -> ast.FunctionDef:
         """
-        Create a test method for deleting a resource.
+        Create a test method for deleting a resource with authentication.
 
         Args:
             resource_name: Name of the resource
@@ -2003,7 +2251,7 @@ class TestCaseGenerator:
             # Add request data
             body.append(self._generate_request_data_assignment(resource_name, create_op['operation']))
 
-            # Add create request
+            # Add create request with authentication
             body.extend([
                 ast.Assign(
                     targets=[
@@ -2017,7 +2265,7 @@ class TestCaseGenerator:
                         ),
                         op=ast.Add(),
                         right=ast.Constant(
-                            value=f"{create_op['path'].split('<')[0]}/",  # Remove path params
+                            value=f"{create_op['path'].split('<')[0]}/",
                             kind=None
                         )
                     )
@@ -2047,6 +2295,14 @@ class TestCaseGenerator:
                             ast.keyword(
                                 arg='format',
                                 value=ast.Constant(value='json', kind=None)
+                            ),
+                            ast.keyword(
+                                arg='headers',
+                                value=ast.Attribute(
+                                    value=ast.Name(id='self', ctx=ast.Load()),
+                                    attr='auth_headers',
+                                    ctx=ast.Load()
+                                )
                             )
                         ]
                     )
@@ -2093,8 +2349,7 @@ class TestCaseGenerator:
                 )
             )
 
-        # Add delete request
-        # FIX: Changed path format handling to use proper string formatting
+        # Add delete request with authentication
         body.extend([
             ast.Assign(
                 targets=[
@@ -2110,7 +2365,6 @@ class TestCaseGenerator:
                     right=ast.Call(
                         func=ast.Attribute(
                             value=ast.Constant(
-                                # FIX: Use proper format pattern with braces
                                 value=f"{delete_op['path'].replace(f'<{pk_param}>', '{}')}/",
                                 kind=None
                             ),
@@ -2141,7 +2395,16 @@ class TestCaseGenerator:
                     args=[
                         ast.Name(id='delete_url', ctx=ast.Load())
                     ],
-                    keywords=[]
+                    keywords=[
+                        ast.keyword(
+                            arg='headers',
+                            value=ast.Attribute(
+                                value=ast.Name(id='self', ctx=ast.Load()),
+                                attr='auth_headers',
+                                ctx=ast.Load()
+                            )
+                        )
+                    ]
                 )
             ),
             ast.Expr(
@@ -2175,7 +2438,6 @@ class TestCaseGenerator:
             if not retrieve_pk_param:
                 retrieve_pk_param = 'id'  # Default if not found
 
-            # FIX: Changed path format handling to use proper string formatting
             body.extend([
                 ast.Expr(
                     value=ast.Constant(
@@ -2197,7 +2459,6 @@ class TestCaseGenerator:
                         right=ast.Call(
                             func=ast.Attribute(
                                 value=ast.Constant(
-                                    # FIX: Use proper format pattern with braces
                                     value=f"{retrieve_op['path'].replace(f'<{retrieve_pk_param}>', '{}')}/",
                                     kind=None
                                 ),
@@ -2228,7 +2489,16 @@ class TestCaseGenerator:
                         args=[
                             ast.Name(id='retrieve_url', ctx=ast.Load())
                         ],
-                        keywords=[]
+                        keywords=[
+                            ast.keyword(
+                                arg='headers',
+                                value=ast.Attribute(
+                                    value=ast.Name(id='self', ctx=ast.Load()),
+                                    attr='auth_headers',
+                                    ctx=ast.Load()
+                                )
+                            )
+                        ]
                     )
                 ),
                 ast.Expr(
@@ -2273,7 +2543,7 @@ class TestCaseGenerator:
 
     def _create_test_crud_method(self, resource_name: str, crud_ops: Dict) -> Optional[ast.FunctionDef]:
         """
-        Create a test method for a complete CRUD cycle.
+        Create a test method for a complete CRUD cycle with authentication.
 
         Args:
             resource_name: Name of the resource
@@ -2317,7 +2587,7 @@ class TestCaseGenerator:
             create_op = resource_ops[create_op_id]
             body.append(self._generate_request_data_assignment(resource_name, create_op['operation']))
 
-            # Add create request
+            # Add create request with authentication
             body.extend([
                 ast.Assign(
                     targets=[
@@ -2331,7 +2601,7 @@ class TestCaseGenerator:
                         ),
                         op=ast.Add(),
                         right=ast.Constant(
-                            value=f"{create_op['path'].split('<')[0]}/",  # Remove path params
+                            value=f"{create_op['path'].split('<')[0]}/",
                             kind=None
                         )
                     )
@@ -2361,6 +2631,14 @@ class TestCaseGenerator:
                             ast.keyword(
                                 arg='format',
                                 value=ast.Constant(value='json', kind=None)
+                            ),
+                            ast.keyword(
+                                arg='headers',
+                                value=ast.Attribute(
+                                    value=ast.Name(id='self', ctx=ast.Load()),
+                                    attr='auth_headers',
+                                    ctx=ast.Load()
+                                )
                             )
                         ]
                     )
@@ -2442,7 +2720,6 @@ class TestCaseGenerator:
             if not pk_param:
                 pk_param = 'id'  # Default if not found
 
-            # FIX: Changed path format handling to use proper string formatting
             body.extend([
                 ast.Expr(
                     value=ast.Constant(
@@ -2464,7 +2741,6 @@ class TestCaseGenerator:
                         right=ast.Call(
                             func=ast.Attribute(
                                 value=ast.Constant(
-                                    # FIX: Use proper format pattern with braces
                                     value=f"{retrieve_op['path'].replace(f'<{pk_param}>', '{}')}/",
                                     kind=None
                                 ),
@@ -2495,7 +2771,16 @@ class TestCaseGenerator:
                         args=[
                             ast.Name(id='retrieve_url', ctx=ast.Load())
                         ],
-                        keywords=[]
+                        keywords=[
+                            ast.keyword(
+                                arg='headers',
+                                value=ast.Attribute(
+                                    value=ast.Name(id='self', ctx=ast.Load()),
+                                    attr='auth_headers',
+                                    ctx=ast.Load()
+                                )
+                            )
+                        ]
                     )
                 ),
                 ast.Expr(
@@ -2654,7 +2939,6 @@ class TestCaseGenerator:
                     )
                 )
 
-            # FIX: Changed path format handling to use proper string formatting
             body.extend([
                 ast.Assign(
                     targets=[
@@ -2670,7 +2954,6 @@ class TestCaseGenerator:
                         right=ast.Call(
                             func=ast.Attribute(
                                 value=ast.Constant(
-                                    # FIX: Use proper format pattern with braces
                                     value=f"{update_op['path'].replace(f'<{pk_param}>', '{}')}/",
                                     kind=None
                                 ),
@@ -2709,6 +2992,14 @@ class TestCaseGenerator:
                             ast.keyword(
                                 arg='format',
                                 value=ast.Constant(value='json', kind=None)
+                            ),
+                            ast.keyword(
+                                arg='headers',
+                                value=ast.Attribute(
+                                    value=ast.Name(id='self', ctx=ast.Load()),
+                                    attr='auth_headers',
+                                    ctx=ast.Load()
+                                )
                             )
                         ]
                     )
@@ -2763,7 +3054,16 @@ class TestCaseGenerator:
                             args=[
                                 ast.Name(id='retrieve_url', ctx=ast.Load())
                             ],
-                            keywords=[]
+                            keywords=[
+                                ast.keyword(
+                                    arg='headers',
+                                    value=ast.Attribute(
+                                        value=ast.Name(id='self', ctx=ast.Load()),
+                                        attr='auth_headers',
+                                        ctx=ast.Load()
+                                    )
+                                )
+                            ]
                         )
                     ),
                     ast.Expr(
@@ -2841,7 +3141,6 @@ class TestCaseGenerator:
             if not pk_param:
                 pk_param = 'id'  # Default if not found
 
-            # FIX: Changed path format handling to use proper string formatting
             body.extend([
                 ast.Expr(
                     value=ast.Constant(
@@ -2863,7 +3162,6 @@ class TestCaseGenerator:
                         right=ast.Call(
                             func=ast.Attribute(
                                 value=ast.Constant(
-                                    # FIX: Use proper format pattern with braces
                                     value=f"{delete_op['path'].replace(f'<{pk_param}>', '{}')}/",
                                     kind=None
                                 ),
@@ -2894,7 +3192,16 @@ class TestCaseGenerator:
                         args=[
                             ast.Name(id='delete_url', ctx=ast.Load())
                         ],
-                        keywords=[]
+                        keywords=[
+                            ast.keyword(
+                                arg='headers',
+                                value=ast.Attribute(
+                                    value=ast.Name(id='self', ctx=ast.Load()),
+                                    attr='auth_headers',
+                                    ctx=ast.Load()
+                                )
+                            )
+                        ]
                     )
                 ),
                 ast.Expr(
@@ -2947,7 +3254,16 @@ class TestCaseGenerator:
                             args=[
                                 ast.Name(id='retrieve_url', ctx=ast.Load())
                             ],
-                            keywords=[]
+                            keywords=[
+                                ast.keyword(
+                                    arg='headers',
+                                    value=ast.Attribute(
+                                        value=ast.Name(id='self', ctx=ast.Load()),
+                                        attr='auth_headers',
+                                        ctx=ast.Load()
+                                    )
+                                )
+                            ]
                         )
                     ),
                     ast.Expr(
