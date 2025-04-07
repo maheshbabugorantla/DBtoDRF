@@ -33,25 +33,25 @@ TEMPLATE_DIR = Path(__file__).parent / "templates"
 _INFLECT_ENGINE_ = inflect_engine()
 
 
-# --- Import Black ---
-try:
-    import black
-    from black import (
-        FileMode,
-        format_str as black_format_str,
-        NothingChanged as BlackNothingChanged,
-    )
-
-    BLACK_FORMATTER_AVAILABLE = True
-    # Optional: Define default Black mode (can be customized if needed)
-    # BLACK_MODE = FileMode(line_length=88) # Example: default line length
-    BLACK_FORMATTER_MODE = FileMode(line_length=120)  # Use Black's standard defaults
-except ImportError:
-    BLACK_FORMATTER_AVAILABLE = False
-    BLACK_FORMATTER_MODE = None  # Define to avoid NameError later
-    logging.warning(
-        "Package 'black' not found. Generated Python code will not be auto-formatted."
-    )
+def jinja2_pluralize_filter(word):
+    """
+    Custom Jinja filter to pluralize a word using inflect.
+    Includes error handling and fallback.
+    """
+    if not isinstance(word, str) or not word:
+        return "" # Return empty for non-string or empty input
+    try:
+        plural = _INFLECT_ENGINE_.plural(word)
+        # Handle cases where plural returns False or empty string
+        if plural:
+            return plural
+        else:
+            # Standard fallback: append 's' (or 'es' if needed - basic 's' for now)
+            return word + "s"
+    except Exception as e:
+        # Log the error and return a simple fallback
+        logger.error(f"Inflect pluralization failed for '{word}': {e}. Falling back to adding 's'.")
+        return word + "s"
 
 
 def setup_jinja_env() -> Environment:

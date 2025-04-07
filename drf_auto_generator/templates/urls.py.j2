@@ -16,7 +16,8 @@ router = DefaultRouter()
 # URL Prefix: /{{ table.name }}/
 # ViewSet: views.{{ table.model_name }}ViewSet
 # Base Name: '{{ table.name }}' (used for URL reversing)
-router.register(r'{{ table.name }}', views.{{ table.model_name }}ViewSet, basename='{{ table.name }}')
+{% set url_prefix = table.name | pluralize %}
+router.register(r'{{ url_prefix }}', views.{{ table.model_name }}ViewSet, basename='{{ table.name }}')
 {% endfor %}
 
 # --- Nested Routers (Example if implementing nested style) ---
