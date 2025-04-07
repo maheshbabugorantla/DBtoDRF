@@ -72,7 +72,7 @@ class {{ table.model_name }}(models.Model):
 
     class Meta:
         db_table = '{{ table.name }}'
-        managed = False
+        {# managed = False #}
         verbose_name = '{{ table.model_name }}'
         verbose_name_plural = '{{ p.plural(table.model_name) if p.plural(table.model_name) else table.model_name + "s" }}'
         {% if table.primary_key_columns %}
