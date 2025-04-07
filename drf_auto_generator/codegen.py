@@ -1,6 +1,8 @@
 import logging
 import os
 import stat  # For setting file permissions
+import ast
+import astor
 from pathlib import Path
 from typing import List, Dict, Any, Set
 from jinja2 import (
@@ -12,9 +14,16 @@ from jinja2 import (
 from inflect import engine as inflect_engine
 
 # Import from the new Django introspection module
-from .introspection_django import TableInfo
-from .config_validation import ToolConfigSchema
-from .test_codegen_utils import _get_faker_value, _generate_invalid_value
+from drf_auto_generator.introspection_django import TableInfo
+from drf_auto_generator.config_validation import ToolConfigSchema
+from drf_auto_generator.test_codegen_utils import _get_faker_value, _generate_invalid_value
+from .generate_tests_using_ast_new import (
+    OpenAPISpecHandler,
+    SchemaAnalyzer,
+    EndpointAnalyzer,
+    TestCaseGenerator,
+)
+from drf_auto_generator.codegen_utils import format_python_code_using_black
 
 logger = logging.getLogger(__name__)
 
@@ -63,29 +72,9 @@ def setup_jinja_env() -> Environment:
     # env.filters['custom_filter'] = my_custom_filter
     # Add repr filter for debugging or specific quoting needs
     env.filters["repr"] = repr
+    env.filters["pluralize"] = jinja2_pluralize_filter
     env.globals["p"] = _INFLECT_ENGINE_
     return env
-
-
-def format_python_code_using_black(filepath: Path, code_string: str) -> str:
-    """Formats the given Python code using Black."""
-    if not BLACK_FORMATTER_AVAILABLE:
-        return code_string
-
-    try:
-        formatted_code = black_format_str(code_string, mode=BLACK_FORMATTER_MODE)
-        logger.debug(f"Formatted code using Black: {filepath}")
-        return formatted_code
-    except BlackNothingChanged:
-        logger.debug(f"Black formatter did not change the code: {filepath}")
-        return code_string
-    except Exception as e:
-        # Log an error if Black fails for some reason (e.g., invalid syntax not caught earlier)
-        logger.error(
-            f"Could not format Python code using Black: {e}", exc_info=False
-        )  # Keep log concise
-        logger.warning("Writing unformatted Python code due to Black error.")
-        return code_string  # Return the original string on error
 
 
 def generate_file_from_template(
@@ -201,6 +190,63 @@ def setup_project_structure(
     generate_file_from_template(env, ".gitignore.j2", context, base_path / ".gitignore")
 
     logger.info("Basic project structure and core files generated.")
+
+
+def generate_django_tests_using_ast(
+    openapi_spec_dict: Dict[str, Any], config: ToolConfigSchema, app_path: Path
+):
+    """
+    Generates APITestCase classes for each resource in the OpenAPI spec using AST,
+    and writes them to the individual test files in the app_path / tests directory.
+    """
+    logger.info(f"Generating Django test files for app '{config.app_name}'...")
+    test_dir = app_path / "tests"
+    test_dir.mkdir(exist_ok=True)
+
+    # Create __init__.py if it doesn't exist
+    init_file = test_dir / "__init__.py"
+    if not init_file.exists():
+        init_file.touch()
+
+    # Generate test files using AST
+    openapi_spec_handler = OpenAPISpecHandler(openapi_spec_dict)
+    schema_analyzer = SchemaAnalyzer(openapi_spec_handler)
+    endpoint_analyzer = EndpointAnalyzer(openapi_spec_handler)
+
+    # Instantiate the test generator to generate the test case classes using AST
+    api_base = "/api"
+    test_generator = TestCaseGenerator(endpoint_analyzer, schema_analyzer, api_base)
+
+    # Get CRUD Groups to generate one test file per resource
+    crud_groups = endpoint_analyzer.identify_crud_groups()
+
+    # Generate test files for each resource
+    for resource_name, crud_ops in crud_groups.items():
+        logger.info(f"Generating tests for resource: {resource_name}")
+
+        # Generate the test class
+        test_class = test_generator.generate_testcase_class(resource_name, crud_ops)
+
+        # Create AST Module with imports and generated test class
+        module = ast.Module(
+            body=test_generator._create_import_statements() + [test_class],
+            type_ignores=[]
+        )
+
+        # Convert AST module to source code using astor
+        code = astor.to_source(module)
+
+        # Format the generated code using Black
+        output_filename = f"test_api_{resource_name.lower()}.py"
+        output_path = test_dir / output_filename
+
+        # Format the code using Black and Write to file
+        formatted_code = format_python_code_using_black(output_path, code)
+        with open(output_path, "w") as f:
+            f.write(formatted_code)
+
+        logger.info(f"Generated test file: {output_filename}")
+    logger.info("Django test file generation complete.")
 
 
 def generate_django_tests(
@@ -383,7 +429,7 @@ def generate_django_tests(
     logger.info("Django test file generation complete.")
 
 
-def generate_django_code(ir_list: List[TableInfo], config: Dict[str, Any]):
+def generate_django_code(ir_list: List[TableInfo], config: Dict[str, Any], openapi_spec_dict: Dict[str, Any]):
     """Orchestrates the generation of all Django code files."""
     output_dir = config["output_dir"]
     project_name = config["project_name"]
@@ -462,7 +508,8 @@ def generate_django_code(ir_list: List[TableInfo], config: Dict[str, Any]):
     # 9. Generate Django API Tests
     generate_api_tests_flag = config.dict().get("generate_api_tests", True)
     if generate_api_tests_flag:
-        generate_django_tests(ir_list, config, app_path, env)
+        # generate_django_tests(ir_list, config, app_path, env)
+        generate_django_tests_using_ast(openapi_spec_dict, config, app_path)
     else:
         logger.info(
             "Skipping Django API Tests generation. Please set 'generate_api_tests' to True in your config to enable."

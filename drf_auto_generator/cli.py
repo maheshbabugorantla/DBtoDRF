@@ -110,7 +110,7 @@ def main():
 
         # 6. Generate Django Project Code
         logger.info("Generating Django project code...")
-        generate_django_code(intermediate_repr, config)
+        generate_django_code(intermediate_repr, config, openapi_spec)
 
         # --- Success ---
         logger.info("-----------------------------------------")
