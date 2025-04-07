@@ -21,7 +21,7 @@ from typing import Dict, List, Any, Tuple, Optional, Set, Union
 from urllib.parse import urlparse
 from collections import defaultdict
 
-from drf_auto_generator.codegen import format_python_code_using_black
+from drf_auto_generator.codegen_utils import format_python_code_using_black
 
 
 class OpenAPISpecHandler:
@@ -528,7 +528,11 @@ class TestCaseGenerator:
                 ast.Expr(
                     value=ast.Call(
                         func=ast.Attribute(
-                            value=ast.Name(id='super', ctx=ast.Load()),
+                            value=ast.Call(
+                                func=ast.Name(id='super', ctx=ast.Load()),
+                                args=[],
+                                keywords=[]
+                            ),
                             attr='setUp',
                             ctx=ast.Load()
                         ),
@@ -601,7 +605,11 @@ class TestCaseGenerator:
                 ast.Expr(
                     value=ast.Call(
                         func=ast.Attribute(
-                            value=ast.Name(id='super', ctx=ast.Load()),
+                            value=ast.Call(
+                                func=ast.Name(id='super', ctx=ast.Load()),
+                                args=[],
+                                keywords=[]
+                            ),
                             attr='tearDown',
                             ctx=ast.Load()
                         ),
