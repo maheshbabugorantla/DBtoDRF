@@ -17,7 +17,7 @@ from inflect import engine as inflect_engine
 from drf_auto_generator.introspection_django import TableInfo
 from drf_auto_generator.config_validation import ToolConfigSchema
 from drf_auto_generator.test_codegen_utils import _get_faker_value, _generate_invalid_value
-from .generate_tests_using_ast_new import (
+from .generate_tests_using_ast import (
     OpenAPISpecHandler,
     SchemaAnalyzer,
     EndpointAnalyzer,
