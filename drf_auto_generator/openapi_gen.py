@@ -177,6 +177,459 @@ def generate_openapi_input_schema(
     }
 
 
+def generate_endpoints_on_table_indexes_and_constraints(table: TableInfo, config: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Generates OpenAPI Path Item Objects for indexes and unique constraints.
+    These allow querying by fields other than primary key - but only for actual database columns.
+    """
+    paths = {}
+    model_name = table.model_name
+    schema_ref = f"#/components/schemas/{model_name}"
+    tag_name = model_name
+
+    # Use inflect for pluralization
+    try:
+        table_name_plural = p.plural(table.name)
+    except Exception:
+        table_name_plural = f"{table.name}s"
+
+    logger.debug(f"Analyzing table {table.name} for constraint endpoints:")
+    logger.debug(f"  Fields: {[f['name'] for f in table.fields]}")
+    logger.debug(f"  Meta constraints: {table.meta_constraints}")
+    logger.debug(f"  Meta indexes: {table.meta_indexes}")
+
+    # Process unique constraints (both single-field and multi-field)
+    # Only for actual database columns, not relationship fields
+    for field in table.fields:
+        field_name = field["name"]
+        logger.debug(f"  Checking field {field_name}: is_pk={field.get('is_pk', False)}, is_handled_by_relation={field.get('is_handled_by_relation', False)}, unique={field['options'].get('unique', False)}")
+
+        # Skip primary key fields (these are already handled by default CRUD endpoints)
+        if field["is_pk"]:
+            continue
+
+        # Skip relationship fields - only process actual database columns
+        if field.get("is_handled_by_relation", False):
+            continue
+
+        # Skip fields that end with '_rel' (relationship field naming pattern)
+        if field_name.endswith("_rel"):
+            continue
+
+        # Look for single-field unique indexes on actual database columns
+        if field["options"].get("unique", False):
+            field_path = f"/{table_name_plural}/by_{field_name}/{{value}}"
+            logger.debug(f"  Adding unique field endpoint: {field_path}")
+
+            # Get the field's schema to determine parameter format
+            field_schema = field.get("openapi_schema", {"type": "string"})
+
+            paths[field_path] = {
+                "parameters": [
+                    {
+                        "name": "value",
+                        "in": "path",
+                        "required": True,
+                        "description": f"The {field_name} value to look up",
+                        "schema": field_schema
+                    }
+                ],
+                "get": {
+                    "tags": [tag_name],
+                    "summary": f"Retrieve {model_name} by {field_name}",
+                    "operationId": f"retrieve{model_name}By{field_name.capitalize()}",
+                    "responses": {
+                        "200": {
+                            "description": f"Details of {model_name} matching the specified {field_name}",
+                            "content": {"application/json": {"schema": {"$ref": schema_ref}}}
+                        },
+                        "404": {"$ref": "#/components/responses/NotFound"},
+                        "default": {"$ref": "#/components/responses/Error"}
+                    }
+                }
+            }
+
+            logger.debug(f"Added endpoint for unique field lookup: {field_path}")
+
+    # Process multi-field unique constraints (only for actual database columns)
+    for constraint in table.meta_constraints:
+        if constraint["type"] == "unique":
+            constraint_fields = constraint["fields"]
+            # Skip single-field constraints as they're handled above
+            if len(constraint_fields) <= 1:
+                continue
+
+            # Filter out relationship fields - only include actual database columns
+            actual_db_fields = []
+            for field_name in constraint_fields:
+                field = next((f for f in table.fields if f["name"] == field_name), None)
+                if (field and not field.get("is_handled_by_relation", False) and
+                    not field_name.endswith("_rel")):
+                    actual_db_fields.append(field_name)
+
+            if not actual_db_fields:
+                continue  # Skip if no actual database fields
+
+            # Create an endpoint with multiple query parameters for actual DB fields
+            endpoint_name = "_and_".join(actual_db_fields)
+            endpoint_path = f"/{table_name_plural}/by_{endpoint_name}"
+
+            # Add a query parameter for each actual database field in the constraint
+            parameters = []
+            for field_name in actual_db_fields:
+                field = next((f for f in table.fields if f["name"] == field_name), None)
+                if not field:  # Skip if the field is not found
+                    continue
+
+                field_schema = field.get("openapi_schema", {"type": "string"})
+                parameters.append({
+                    "name": field_name,
+                    "in": "query",
+                    "required": True,
+                    "description": f"The {field_name} to filter by",
+                    "schema": field_schema
+                })
+
+            if parameters:
+                paths[endpoint_path] = {
+                    "parameters": parameters,
+                    "get": {
+                        "tags": [tag_name],
+                        "summary": f"Retrieve {model_name} by composite unique constraint",
+                        "operationId": f"retrieve{model_name}By{endpoint_name.capitalize().replace('_', '')}",
+                        "responses": {
+                            "200": {
+                                "description": f"Details of {model_name} matching the compound constraint",
+                                "content": {"application/json": {"schema": {"$ref": schema_ref}}}
+                            },
+                            "404": {"$ref": "#/components/responses/NotFound"},
+                            "default": {"$ref": "#/components/responses/Error"}
+                        }
+                    }
+                }
+
+                logger.debug(f"Added endpoint for compound unique constraint: {endpoint_path}")
+
+    # Process indexes (non-unique ones will return lists) - only for actual database columns
+    for index in table.meta_indexes:
+        index_fields = index["fields"]
+        if not index_fields:
+            continue
+
+        # Filter out relationship fields - only include actual database columns
+        actual_db_index_fields = []
+        for field_name in index_fields:
+            field = next((f for f in table.fields if f["name"] == field_name), None)
+            if (field and not field.get("is_handled_by_relation", False) and
+                not field_name.endswith("_rel")):
+                actual_db_index_fields.append(field_name)
+
+        if not actual_db_index_fields:
+            continue  # Skip if no actual database fields in this index
+
+        # Skip indexes on a single field that's already unique (handled above)
+        if len(actual_db_index_fields) == 1:
+            field_name = actual_db_index_fields[0]
+            field = next((f for f in table.fields if f["name"] == field_name), None)
+            if not field:  # Skip if the field is not found
+                continue
+
+            if field["options"].get("unique", False):
+                continue
+
+            # Add endpoint for single-field non-unique index (returns a list)
+            field_path = f"/{table_name_plural}/filter_by_{field_name}/{{value}}"
+
+            # Get the field's schema to determine parameter format
+            field_schema = field.get("openapi_schema", {"type": "string"})
+
+            paths[field_path] = {
+                "parameters": [
+                    {
+                        "name": "value",
+                        "in": "path",
+                        "required": True,
+                        "description": f"The {field_name} value to filter by",
+                        "schema": field_schema
+                    }
+                ],
+                "get": {
+                    "tags": [tag_name],
+                    "summary": f"List {p.plural(model_name)} filtered by {field_name}",
+                    "operationId": f"list{p.plural(model_name)}By{field_name.capitalize()}",
+                    "responses": {
+                        "200": {
+                            "description": f"List of {p.plural(model_name)} matching the specified {field_name}",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "array",
+                                        "items": {"$ref": schema_ref}
+                                    }
+                                }
+                            }
+                        },
+                        "default": {"$ref": "#/components/responses/Error"}
+                    }
+                }
+            }
+
+            logger.debug(f"Added endpoint for non-unique index field lookup: {field_path}")
+        else:
+            # Multi-field index (returns a list) - only for actual database columns
+            endpoint_name = "_and_".join(actual_db_index_fields)
+            endpoint_path = f"/{table_name_plural}/filter_by_{endpoint_name}"
+
+            # Add a query parameter for each actual database field in the index
+            parameters = []
+            for field_name in actual_db_index_fields:
+                field = next((f for f in table.fields if f["name"] == field_name), None)
+                if not field:  # Skip if the field is not found
+                    continue
+
+                field_schema = field.get("openapi_schema", {"type": "string"})
+                parameters.append({
+                    "name": field_name,
+                    "in": "query",
+                    "required": False,  # Make optional for filtering flexibility
+                    "description": f"The {field_name} to filter by",
+                    "schema": field_schema
+                })
+
+            if parameters:
+                paths[endpoint_path] = {
+                    "parameters": parameters,
+                    "get": {
+                        "tags": [tag_name],
+                        "summary": f"List {p.plural(model_name)} filtered by index fields",
+                        "operationId": f"list{p.plural(model_name)}By{endpoint_name.capitalize().replace('_', '')}",
+                        "responses": {
+                            "200": {
+                                "description": f"List of {p.plural(model_name)} matching the filter criteria",
+                                "content": {
+                                    "application/json": {
+                                        "schema": {
+                                            "type": "array",
+                                            "items": {"$ref": schema_ref}
+                                        }
+                                    }
+                                }
+                            },
+                            "default": {"$ref": "#/components/responses/Error"}
+                        }
+                    }
+                }
+
+                logger.debug(f"Added endpoint for multi-field index: {endpoint_path}")
+
+    logger.debug(f"Generated {len(paths)} constraint-based endpoints for table {table.name}")
+    return paths
+
+
+def generate_m2m_endpoints(
+    table: TableInfo, config: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    Generates OpenAPI Path Item Objects for Many-to-Many relationship operations.
+    These allow adding/removing items from M2M relationships.
+    """
+    paths = {}
+    model_name = table.model_name
+    schema_ref = f"#/components/schemas/{model_name}"
+    tag_name = model_name
+
+    # Use inflect for pluralization
+    try:
+        table_name_plural = p.plural(table.name)
+    except Exception:
+        table_name_plural = f"{table.name}s"
+
+    # Find M2M relationships in this table
+    m2m_relationships = [r for r in table.relationships if r["type"] == "many-to-many"]
+
+    for relation in m2m_relationships:
+        rel_name = relation["name"]
+        target_model = relation["target_model_name"]
+
+        # Create endpoints for managing the M2M relationship
+        # 1. List related items
+        list_path = f"/{table_name_plural}/{{{table.model_name.lower()}_id}}/{rel_name}"
+
+        # Find PK field info
+        pk_field_info = next((f for f in table.fields if f["is_pk"]), None)
+        if not pk_field_info:
+            continue  # Skip if no PK field found
+
+        pk_name = pk_field_info["name"]
+        pk_schema = pk_field_info.get("openapi_schema", {"type": "integer"})
+
+        paths[list_path] = {
+            "parameters": [
+                {
+                    "name": f"{table.model_name.lower()}_id",
+                    "in": "path",
+                    "required": True,
+                    "description": f"The ID of the {model_name}",
+                    "schema": pk_schema
+                }
+            ],
+            "get": {
+                "tags": [tag_name],
+                "summary": f"List related {rel_name} for a {model_name}",
+                "operationId": f"list{model_name}{rel_name.capitalize()}",
+                "responses": {
+                    "200": {
+                        "description": f"List of {rel_name} related to the {model_name}",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": f"#/components/schemas/{target_model}"
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "404": {"$ref": "#/components/responses/NotFound"},
+                    "default": {"$ref": "#/components/responses/Error"}
+                }
+            }
+        }
+
+        # 2. Add a related item to the M2M relationship
+        add_path = f"/{table_name_plural}/{{{table.model_name.lower()}_id}}/{rel_name}/{{{target_model.lower()}_id}}"
+
+        paths[add_path] = {
+            "parameters": [
+                {
+                    "name": f"{table.model_name.lower()}_id",
+                    "in": "path",
+                    "required": True,
+                    "description": f"The ID of the {model_name}",
+                    "schema": pk_schema
+                },
+                {
+                    "name": f"{target_model.lower()}_id",
+                    "in": "path",
+                    "required": True,
+                    "description": f"The ID of the {target_model} to add",
+                    "schema": {"type": "integer"}
+                }
+            ],
+            "post": {
+                "tags": [tag_name],
+                "summary": f"Add a {target_model} to the {rel_name} of a {model_name}",
+                "operationId": f"add{target_model}To{model_name}{rel_name.capitalize()}",
+                "responses": {
+                    "201": {
+                        "description": f"{target_model} added to {rel_name} successfully."
+                    },
+                    "400": {"$ref": "#/components/responses/InvalidInput"},
+                    "404": {"$ref": "#/components/responses/NotFound"},
+                    "default": {"$ref": "#/components/responses/Error"}
+                }
+            },
+            "delete": {
+                "tags": [tag_name],
+                "summary": f"Remove a {target_model} from the {rel_name} of a {model_name}",
+                "operationId": f"remove{target_model}From{model_name}{rel_name.capitalize()}",
+                "responses": {
+                    "204": {
+                        "description": f"{target_model} removed from {rel_name} successfully."
+                    },
+                    "404": {"$ref": "#/components/responses/NotFound"},
+                    "default": {"$ref": "#/components/responses/Error"}
+                }
+            }
+        }
+
+        # 3. If the M2M relationship has metadata fields, add an endpoint to update them
+        if relation.get("has_relationship_attributes", False) and relation.get("metadata_fields"):
+            metadata_path = f"/{table_name_plural}/{{{table.model_name.lower()}_id}}/{rel_name}/{{{target_model.lower()}_id}}/metadata"
+
+            # Build a schema for the metadata fields
+            metadata_properties = {}
+            for field in relation.get("metadata_fields", []):
+                field_name = field["name"]
+                field_schema = field.get("openapi_schema", {"type": "string"})
+                metadata_properties[field_name] = field_schema
+
+            paths[metadata_path] = {
+                "parameters": [
+                    {
+                        "name": f"{table.model_name.lower()}_id",
+                        "in": "path",
+                        "required": True,
+                        "description": f"The ID of the {model_name}",
+                        "schema": pk_schema
+                    },
+                    {
+                        "name": f"{target_model.lower()}_id",
+                        "in": "path",
+                        "required": True,
+                        "description": f"The ID of the {target_model}",
+                        "schema": {"type": "integer"}
+                    }
+                ],
+                "get": {
+                    "tags": [tag_name],
+                    "summary": f"Get metadata for the relationship between {model_name} and {target_model}",
+                    "operationId": f"get{model_name}{target_model}Metadata",
+                    "responses": {
+                        "200": {
+                            "description": f"Metadata for the relationship",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "properties": metadata_properties
+                                    }
+                                }
+                            }
+                        },
+                        "404": {"$ref": "#/components/responses/NotFound"},
+                        "default": {"$ref": "#/components/responses/Error"}
+                    }
+                },
+                "patch": {
+                    "tags": [tag_name],
+                    "summary": f"Update metadata for the relationship between {model_name} and {target_model}",
+                    "operationId": f"update{model_name}{target_model}Metadata",
+                    "requestBody": {
+                        "description": "Metadata fields to update",
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": metadata_properties
+                                }
+                            }
+                        }
+                    },
+                    "responses": {
+                        "200": {
+                            "description": "Metadata updated successfully",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "properties": metadata_properties
+                                    }
+                                }
+                            }
+                        },
+                        "400": {"$ref": "#/components/responses/InvalidInput"},
+                        "404": {"$ref": "#/components/responses/NotFound"},
+                        "default": {"$ref": "#/components/responses/Error"}
+                    }
+                }
+            }
+
+    return paths
+
+
 def generate_paths_for_table(
     table: TableInfo, config: Dict[str, Any]
 ) -> Dict[str, Any]:
@@ -190,6 +643,13 @@ def generate_paths_for_table(
 
     model_name = table.model_name
     pk_field_info = next((f for f in table.fields if f["is_pk"]), None)
+
+    # Skip M2M through tables if configured
+    is_m2m_through_table = getattr(table, "is_m2m_through_table", False)
+    skip_m2m_through_tables = config.get("skip_m2m_through_tables", True)
+    # if is_m2m_through_table and skip_m2m_through_tables:
+    #     logger.debug(f"Skipping path generation for M2M through table {table.name}")
+    #     return {}
 
     if not pk_field_info:
         logger.warning(
@@ -211,31 +671,101 @@ def generate_paths_for_table(
 
     # --- List and Create Path ---
     list_create_path = f"/{table_name_plural}"
+
+    # Build query parameters for the list endpoint
+    query_parameters = [
+        # Standard pagination params
+        {
+            "name": "page",
+            "in": "query",
+            "required": False,
+            "schema": {"type": "integer", "default": 1},
+            "description": "Page number",
+        },
+        {
+            "name": "page_size",
+            "in": "query",
+            "required": False,
+            "schema": {"type": "integer"},
+            "description": "Number of results per page",
+        },
+        # Standard ordering and search
+        {
+            "name": "ordering",
+            "in": "query",
+            "required": False,
+            "schema": {"type": "string"},
+            "description": "Field to order results by. Prefix with '-' for descending order.",
+        },
+        {
+            "name": "search",
+            "in": "query",
+            "required": False,
+            "schema": {"type": "string"},
+            "description": "Search term to filter results",
+        }
+    ]
+
+    # Add filtering parameters for foreign key relationships
+    for rel in table.relationships:
+        if rel["type"] == "many-to-one":  # ForeignKey relationships
+            rel_name = rel["name"]
+            query_parameters.append({
+                "name": rel_name,
+                "in": "query",
+                "required": False,
+                "schema": {"type": "integer"},
+                "description": f"Filter by {rel_name} ID",
+            })
+
+    # Add filtering parameters for indexed fields
+    for index in table.meta_indexes:
+        index_fields = index.get("fields", [])
+        for field_name in index_fields:
+            # Skip if already added as relationship filter
+            if any(param["name"] == field_name for param in query_parameters):
+                continue
+
+            # Find field info for schema
+            field_info = next((f for f in table.fields if f.get("name") == field_name), None)
+            if field_info and not field_info.get("is_pk", False):
+                field_schema = field_info.get("openapi_schema", {"type": "string"})
+                # Extract just the type for query parameter
+                param_schema = {"type": field_schema.get("type", "string")}
+
+                query_parameters.append({
+                    "name": field_name,
+                    "in": "query",
+                    "required": False,
+                    "schema": param_schema,
+                    "description": f"Filter by {field_name}",
+                })
+
+    # Add unique field filters
+    for field in table.fields:
+        field_name = field.get("name")
+        if (field.get("options", {}).get("unique", False) and
+            not field.get("is_pk", False) and
+            not any(param["name"] == field_name for param in query_parameters)):
+
+            field_schema = field.get("openapi_schema", {"type": "string"})
+            param_schema = {"type": field_schema.get("type", "string")}
+
+            query_parameters.append({
+                "name": field_name,
+                "in": "query",
+                "required": False,
+                "schema": param_schema,
+                "description": f"Filter by {field_name} (exact match)",
+            })
+
     paths[list_create_path] = {
         # --- GET (List) ---
         "get": {
             "tags": [tag_name],
             "summary": f"List {p.plural(model_name)}",
             "operationId": f"list{p.plural(model_name)}",
-            # TODO: Add parameters for pagination (page, page_size), filtering, ordering
-            "parameters": [
-                # Example pagination params (if using PageNumberPagination)
-                {
-                    "name": "page",
-                    "in": "query",
-                    "required": False,
-                    "schema": {"type": "integer", "default": 1},
-                    "description": "Page number",
-                },
-                {
-                    "name": "page_size",
-                    "in": "query",
-                    "required": False,
-                    "schema": {"type": "integer"},
-                    "description": "Number of results per page",
-                },
-                # TODO: Add 'ordering', 'search' based on ViewSet filter_backends
-            ],
+            "parameters": query_parameters,
             "responses": {
                 "200": {
                     "description": f"Successfully retrieved list of {p.plural(model_name)}.",
@@ -305,12 +835,12 @@ def generate_paths_for_table(
     }
 
     # --- Detail, Update, Partial Update, Delete Path ---
-    detail_path = f"/{table_name_plural}/{{{pk_name}}}"
+    detail_path = f"/{table_name_plural}/{{id}}"
     paths[detail_path] = {
         # Common path parameter
         "parameters": [
             {
-                "name": pk_name,
+                "name": "id",
                 "in": "path",
                 "required": True,
                 "description": f"The primary key of the {model_name}.",
@@ -396,6 +926,14 @@ def generate_paths_for_table(
     }
 
     # TODO: Add nested paths if relation_style is 'nested' based on RelationshipInfo
+
+    # Add index and constraint-based endpoints for efficient lookups
+    constraint_paths = generate_endpoints_on_table_indexes_and_constraints(table, config)
+    paths.update(constraint_paths)
+
+    # Generate M2M endpoints if needed
+    m2m_paths = generate_m2m_endpoints(table, config)
+    paths.update(m2m_paths)
 
     return paths
 
@@ -485,7 +1023,7 @@ def generate_openapi_spec(
         patch_schema_obj.pop("required", None)  # Remove 'required' list for PATCH
         schemas[f"{model_name}PatchInput"] = patch_schema_obj
 
-        # Generate CRUD paths for the table
+        # Generate paths for the table
         table_paths = generate_paths_for_table(table, config)
         all_paths.update(table_paths)
 
