@@ -4,7 +4,7 @@ import stat  # For setting file permissions
 import ast
 import astor
 from pathlib import Path
-from typing import List, Dict, Any, Set
+from typing import List, Dict, Any, Set, Optional
 from jinja2 import (
     Environment,
     FileSystemLoader,
@@ -24,6 +24,7 @@ from .generate_tests_using_ast import (
     TestCaseGenerator,
 )
 from drf_auto_generator.codegen_utils import format_python_code_using_black
+
 
 logger = logging.getLogger(__name__)
 

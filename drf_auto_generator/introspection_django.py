@@ -2,6 +2,7 @@ import logging
 import django
 from django.db import connections, DEFAULT_DB_ALIAS
 from django.conf import settings
+from django.db.backends.postgresql.introspection import DatabaseIntrospection
 from typing import List, Optional, Dict, Any, Set, Tuple
 from dataclasses import dataclass, field
 
@@ -23,6 +24,7 @@ class ColumnInfo:
     is_unique: bool = False  # Derived later from constraints
     is_foreign_key: bool = False  # Derived later from relations/constraints
     foreign_key_to: Optional[Tuple[str, str]] = None  # (target_table, target_column)
+    enum_values: Optional[List[str]] = None  # Store enum values if applicable
 
 
 @dataclass
@@ -53,6 +55,9 @@ class TableInfo:
     db_check_constraints: List[Dict[str, Any]] = field(
         default_factory=list
     )  # To note unhandled checks
+    # --- Additional fields for M2M relationships ---
+    is_m2m_through_table: bool = False
+    skip_detailed_processing: bool = False
 
 
 # --- Logging Setup ---
@@ -121,6 +126,46 @@ def _get_column_details(
     return collation, internal_size, precision, scale
 
 
+class CustomPostgreSQLIntrospection(DatabaseIntrospection):
+    def get_field_type(self, data_type, description):
+        try:
+            return super().get_field_type(data_type, description)
+        except Exception as e:
+            logger.error(f"Error getting field type for {data_type}: {e}. Returning TextField as fallback.")
+            return 'TextField'  # Fallback to TextField
+
+    def is_enum_type(self, cursor, type_name):
+        """Check if a given type is a PostgreSQL enum."""
+        query = """
+            SELECT EXISTS (
+                SELECT 1
+                FROM pg_type
+                WHERE typname = %s AND typtype = 'e'
+            )
+        """
+        cursor.execute(query, [type_name])
+        return cursor.fetchone()[0]
+
+    def get_enum_values(self, cursor, enum_type_name):
+        """Fetch the values of a PostgreSQL enum type."""
+        query = """
+            SELECT enumlabel
+            FROM pg_enum
+            WHERE enumtypid = (SELECT oid FROM pg_type WHERE typname = %s)
+            ORDER BY enumsortorder
+        """
+        cursor.execute(query, [enum_type_name])
+        return [row[0] for row in cursor.fetchall()]
+
+    def get_field_type_with_enum(self, cursor, data_type, description):
+        """Get the field type, handling PostgreSQL enums."""
+        type_name = description.name  # Get the type name
+        if self.is_enum_type(cursor, type_name):
+            enum_values = self.get_enum_values(cursor, type_name)
+            return 'CharField', enum_values
+        return self.get_field_type(data_type, description), None
+
+
 # --- Main Introspection Function ---
 def introspect_schema_django(
     db_alias: str = DEFAULT_DB_ALIAS,
@@ -137,7 +182,7 @@ def introspect_schema_django(
     try:
         # Get connection and introspector; setup_django should ensure this works
         conn = connections[db_alias]
-        introspector = conn.introspection
+        introspector = CustomPostgreSQLIntrospection(conn)
     except Exception as e:
         logger.error(
             f"Could not get Django connection or introspector for alias '{db_alias}': {e}"
@@ -276,12 +321,12 @@ def introspect_schema_django(
                         description
                     )
 
+                    # Get field type and enum values (if applicable)
+                    field_type = introspector.get_field_type(description.type_code, description)
+
                     col_info = ColumnInfo(
                         name=col_name,
-                        # Use get_field_type for a Django-centric interpretation of the type
-                        db_type_string=introspector.get_field_type(
-                            description.type_code, description
-                        ),
+                        db_type_string=field_type,
                         internal_size=internal_size,
                         precision=precision,
                         scale=scale,
@@ -289,6 +334,7 @@ def introspect_schema_django(
                         default=default_val,
                         collation=collation,
                         is_pk=(col_name in final_pk_columns),
+                        # enum_values=enum_values,  # Store enum values if applicable
                     )
                     columns_info.append(col_info)
 

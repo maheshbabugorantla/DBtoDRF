@@ -14,7 +14,9 @@ from drf_auto_generator.introspection_django import (
 from drf_auto_generator.config import load_config
 from drf_auto_generator.mapper import build_intermediate_representation
 from drf_auto_generator.openapi_gen import generate_openapi_spec, save_openapi_spec
-from drf_auto_generator.codegen import generate_django_code
+
+# Change from the template-based to AST-based code generation
+from drf_auto_generator.ast_codegen_main import generate_django_code
 
 # Configure root logger
 logging.basicConfig(level=logging.INFO, format="%(name)s:%(levelname)s: %(message)s")
@@ -52,6 +54,13 @@ def main():
         "--verbose",
         action="store_true",
         help="Enable verbose DEBUG logging for the generator tool.",
+    )
+    # Add AST-based code generation option (defaults to True to use AST)
+    parser.add_argument(
+        "--use-ast",
+        action="store_true",
+        default=True,
+        help="Use AST-based code generation (default) instead of template-based.",
     )
     # Add more CLI overrides if needed (e.g., --project-name, --app-name)
 
@@ -108,8 +117,8 @@ def main():
         # Save the spec file within the generated project directory
         save_openapi_spec(openapi_spec, config["output_dir"])
 
-        # 6. Generate Django Project Code
-        logger.info("Generating Django project code...")
+        # 6. Generate Django Project Code using AST-based generation
+        logger.info("Generating Django project code using AST-based generation...")
         generate_django_code(intermediate_repr, config, openapi_spec)
 
         # --- Success ---
