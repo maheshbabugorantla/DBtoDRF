@@ -398,7 +398,6 @@ def analyze_relationships_django(
 
     # --- Pass 1: Identify ManyToOne relationships based on FKs ---
     for table in tables:
-        model_name = table.model_name
         relationships = []  # Store relationship definitions as dicts
 
         # Process FKs from relations or constraints
@@ -469,7 +468,20 @@ def analyze_relationships_django(
             fk_blankable = fk_nullable  # Simple assumption: blank = null for FKs
 
             # TODO: Determine on_delete (requires specific constraint info or config)
-            on_delete_action = "models.CASCADE"  # Default, needs improvement
+            on_delete_action = "CASCADE"
+
+            # Generate unique related_name to avoid clashes
+            # Count how many FKs from current table already point to target_table
+            existing_rels_to_target = [r for r in relationships if r.get("target_table") == target_table_name]
+            base_related_name = p.plural(table.name)
+
+            if len(existing_rels_to_target) == 0:
+                # First FK to this target - use simple plural name
+                related_name = base_related_name
+            else:
+                # Multiple FKs to same target - make related_name unique
+                # Use the field name to differentiate
+                related_name = f"{base_related_name}_{rel_name_guess}"
 
             # ManyToOne relationship from current table to target table
             mto_rel = {
@@ -479,7 +491,7 @@ def analyze_relationships_django(
                 "target_model_name": target_model_name,
                 # Generate a usable related_name for the reverse relation (e.g., 'book_set')
                 # Use singular of target + _set or plural of current table name
-                "related_name": f"{p.plural(table.name)}",  # Example: book_set or orders
+                "related_name": related_name,
                 "source_columns": [fk_col_name],
                 "target_columns": [
                     target_col_name
@@ -510,6 +522,272 @@ def analyze_relationships_django(
         # to the *two endpoint tables*, referencing the join table via `through`.
 
         table.relationships = relationships
+
+    potential_join_tables = []
+    for table in tables:
+        # Skip table without exactly 2 FKs
+        fk_fields = [f for f in table.fields if f["is_fk"]]
+        if len(fk_fields) != 2:
+            continue
+
+        # Get PK fields details
+        pk_fields = [f for f in table.fields if f["is_pk"]]
+        if len(pk_fields) != 2:
+            continue
+
+        # Check if PK consists of both FK columns (composite key)
+        # or check if table has exactly 2 FKs and nothing else substantial
+        has_pk_consisting_of_fks = False
+        if len(pk_fields) >= 2:
+            # Check if all PKs are FKs
+            pk_field_names = [f["original_column_name"] for f in pk_fields]
+            fk_field_names = [f["original_column_name"] for f in fk_fields]
+            has_pk_consisting_of_fks = all(name in fk_field_names for name in pk_field_names)
+
+        # Alternative check: if the table only has 2 FKs and no other substantial fields
+        # (allow for timestamps, IDs, etc.), it might be a join table
+        substantial_fields = [
+            f for f in table.fields
+            if not f["is_pk"] and not f["is_fk"] and
+            not f["name"].lower() in (
+                "created_at", "updated_at", "created", "modified",
+                "creation_date", "modification_date", "timestamp"
+            )
+        ]
+
+        has_only_fks_and_minimal_fields = len(substantial_fields) <= 1
+        logger.debug(
+            f"Table {table.name} has has_pk_consisting_of_fks={has_pk_consisting_of_fks}, "
+            f"substantial_fields={len(substantial_fields)}"
+        )
+
+        if has_pk_consisting_of_fks or has_only_fks_and_minimal_fields:
+            # Get FK target information
+            fk_targets = []
+            fk_columns = []
+
+            for fk_field in fk_fields:
+                original_column_name = fk_field["original_column_name"]
+                column_obj = next((c for c in table.columns if c.name == original_column_name), None)
+
+                if column_obj and column_obj.foreign_key_to:
+                    target_table_name, target_column_name = column_obj.foreign_key_to
+                    if target_table_name in table_map:
+                        fk_targets.append((target_table_name, target_column_name))
+                        fk_columns.append(original_column_name)
+
+            # Verify we have two distinct targets
+            if len(fk_targets) == 2:
+                # Extract additional metadata fields - any non-PK, non-FK fields that might
+                # represent relationship attributes
+                metadata_fields = []
+                for field in table.fields:
+                    if (not field["is_pk"] and not field["is_fk"] and
+                        not field["name"].lower() in (
+                            "created_at", "updated_at", "created", "modified",
+                            "creation_date", "modification_date", "timestamp"
+                        )
+                    ):
+                        metadata_fields.append(field)
+
+                potential_join_tables.append({
+                    "join_table": table,
+                    "fk1_column": fk_columns[0],
+                    "target1": fk_targets[0][0],
+                    "target1_col": fk_targets[0][1],
+                    "fk2_column": fk_columns[1],
+                    "target2": fk_targets[1][0],
+                    "target2_col": fk_targets[1][1],
+                    "metadata_fields": metadata_fields
+                })
+                logger.debug(
+                    f"Potential M2M join table found: {table.name} linking "
+                    f"{fk_targets[0][0]} and {fk_targets[1][0]}"
+                )
+
+    # Now create M2M relationshipS based on the identified join tables
+    for join_table in potential_join_tables:
+        _join_table: TableInfo = join_table["join_table"]
+
+        # Mark the join table
+        _join_table.is_m2m_through_table = True
+        logger.info(f"Marked table {_join_table.name} as M2M through table")
+
+        target1_name = join_table["target1"]
+        target2_name = join_table["target2"]
+        fk1_column = join_table["fk1_column"]
+        fk2_column = join_table["fk2_column"]
+        metadata_fields = join_table["metadata_fields"]
+
+        # Get the model objects        m2m_rel = {
+        target1 = table_map.get(target1_name)
+        target2 = table_map.get(target2_name)
+
+        if not target1 or not target2:
+            logger.warning(
+                f"Skipping M2M relationship for {_join_table.name}: Target tables not found"
+            )
+            continue
+
+        # Handle self-referential M2M (both FKs point to the same table)
+        is_self_referential = target1_name == target2_name
+
+        if is_self_referential:
+            logger.info(f"Found self-referential M2M relationship for {_join_table.name} for {target1_name}")
+
+            # For self-referential M2M, we only create one relationship
+            # The field name needs to be descriptive of the relationship
+            # Try to use the join table name or something based on it
+            rel_name = clean_field_name(_join_table.name)
+            # Make it plural since it's a to-many relationship
+            rel_name = p.plural(rel_name)
+
+            # Generate better names based on column names if possible
+            # e.g., "followers" and "following" for a user-follows-user relationship
+            # This is a heuristic and might need adjustment for specific schemas
+            if any(s in fk1_column.lower() for s in ["from", "source", "follower"]):
+                rel_name = "followers"
+            elif any(s in fk1_column.lower() for s in ["to", "target", "following"]):
+                rel_name = "following"
+
+            # Avoid name clashes
+            # Check if the name already exists in relationships
+            existing_rel_names = {r["name"] for r in target1.relationships}
+            if rel_name in existing_rel_names:
+                rel_name = f"{rel_name}_self"
+
+                # If still clashing, add a suffix
+                if rel_name in existing_rel_names:
+                    rel_name = f"{rel_name}_{_join_table.name}"
+
+            # Find the actual FK field names in the through model for through_fields
+            fk1_field_name = None
+            fk2_field_name = None
+            for rel in _join_table.relationships:
+                if rel["type"] == "many-to-one" and fk1_column in rel.get("source_columns", []):
+                    fk1_field_name = rel["name"]
+                elif rel["type"] == "many-to-one" and fk2_column in rel.get("source_columns", []):
+                    fk2_field_name = rel["name"]
+
+            # Create the self-referential M2M relationship
+            m2m_rel = {
+                "name": rel_name,
+                "type": "many-to-many",
+                "target_table": target1.name,
+                "target_model_name": target1.model_name,
+                "through": _join_table.name,
+                "through_model": _join_table.model_name,
+                "source_field": fk1_column,
+                "target_field": fk2_column,
+                "symmetrical": False,  # Most self-referential relationships aren't symmetrical
+                "is_self_referential": True,
+                "related_name": f"{rel_name}_of",  # Or another appropriate name
+                "django_field_options": {
+                    "through": _join_table.model_name,
+                    "through_fields": (fk1_field_name or fk1_column, fk2_field_name or fk2_column),
+                    "blank": True,
+                    "symmetrical": False,
+                }
+            }
+
+            # Add metadata fields if any
+            if metadata_fields:
+                m2m_rel["metadata_fields"] = metadata_fields
+                m2m_rel["has_relationship_attributes"] = True
+
+            # Add the relationship to the model
+            target1.relationships.append(m2m_rel)
+            logger.info(f"Created self-referential M2M relationship '{rel_name}' for {target1.name}")
+        else:
+            # Find the actual FK field names in the through model for through_fields
+            fk1_field_name = None
+            fk2_field_name = None
+            for rel in _join_table.relationships:
+                if rel["type"] == "many-to-one" and fk1_column in rel.get("source_columns", []):
+                    fk1_field_name = rel["name"]
+                elif rel["type"] == "many-to-one" and fk2_column in rel.get("source_columns", []):
+                    fk2_field_name = rel["name"]
+
+            if target1.name <= target2.name:
+                # Put the M2M field on target1
+                rel_name = p.plural(target2.name.lower())  # Use plural of target2 as field name
+                # Avoid name clashes
+                if rel_name == target1.name.lower():
+                    rel_name = f"{rel_name}_list"
+
+                # Check if name already exists in target1's relationships
+                existing_rel_names = {r["name"] for r in target1.relationships}
+                if rel_name in existing_rel_names:
+                    rel_name = f"{rel_name}_via_{_join_table.name}"
+
+                m2m_rel = {
+                    "name": rel_name,
+                    "type": "many-to-many",
+                    "target_table": target2.name,
+                    "target_model_name": target2.model_name,
+                    "through": _join_table.name,
+                    "through_model": _join_table.model_name,
+                    "source_field": fk1_column,
+                    "target_field": fk2_column,
+                    "related_name": p.plural(target1.name.lower()),  # For reverse relation
+                    "is_self_referential": False,
+                    "django_field_options": {
+                        "through": _join_table.model_name,
+                        "through_fields": (fk1_field_name or fk1_column, fk2_field_name or fk2_column),
+                        "blank": True,
+                        "related_name": p.plural(target1.name.lower()),
+                    }
+                }
+
+                # Add metadata fields if any
+                if metadata_fields:
+                    m2m_rel["metadata_fields"] = metadata_fields
+                    m2m_rel["has_relationship_attributes"] = True
+
+                # Add the M2M relationship to target1 only
+                target1.relationships.append(m2m_rel)
+
+                logger.info(f"Created M2M relationship on {target1.name} pointing to {target2.name} through {_join_table.name}")
+            else:
+                # Put the M2M field on target2
+                rel_name = p.plural(target1.name.lower())  # Use plural of target1 as field name
+                # Avoid name clashes
+                if rel_name == target2.name.lower():
+                    rel_name = f"{rel_name}_list"
+
+                # Check if name already exists in target2's relationships
+                existing_rel_names = {r["name"] for r in target2.relationships}
+                if rel_name in existing_rel_names:
+                    rel_name = f"{rel_name}_via_{_join_table.name}"
+
+                m2m_rel = {
+                    "name": rel_name,
+                    "type": "many-to-many",
+                    "target_table": target1.name,
+                    "target_model_name": target1.model_name,
+                    "through": _join_table.name,
+                    "through_model": _join_table.model_name,
+                    "source_field": fk2_column,  # Note the reversed columns
+                    "target_field": fk1_column,
+                    "related_name": p.plural(target2.name.lower()),  # For reverse relation
+                    "is_self_referential": False,
+                    "django_field_options": {
+                        "through": _join_table.model_name,
+                        "through_fields": (fk2_field_name or fk2_column, fk1_field_name or fk1_column),  # Reversed
+                        "blank": True,
+                        "related_name": p.plural(target2.name.lower()),
+                    }
+                }
+
+                # Add metadata fields if any
+                if metadata_fields:
+                    m2m_rel["metadata_fields"] = metadata_fields
+                    m2m_rel["has_relationship_attributes"] = True
+
+                # Add the M2M relationship to target2 only
+                target2.relationships.append(m2m_rel)
+
+                logger.info(f"Created M2M relationship on {target2.name} pointing to {target1.name} through {_join_table.name}")
 
 
 def build_intermediate_representation(schema_infos: List[TableInfo]) -> List[TableInfo]:
