@@ -18,6 +18,40 @@ from drf_auto_generator.mapper import to_pascal_case
 logger = logging.getLogger(__name__)
 
 
+def _has_composite_primary_key(table_info: TableInfo) -> bool:
+    """
+    Determine if this table has a composite primary key (but is not an M2M through table).
+
+    Composite primary key tables:
+    1. Have more than 1 primary key column
+    2. Are NOT M2M through tables (which also have composite PKs but are handled separately)
+    """
+    pk_count = len(table_info.primary_key_columns)
+
+    if pk_count <= 1:
+        return False
+
+    # If it has composite PK but is an M2M through table, don't consider it as composite PK
+    # (it will be handled by M2M through table logic)
+    if table_info.is_m2m_through_table:
+        return False
+
+    return True
+
+
+def _should_skip_admin_registration(table_info: TableInfo) -> bool:
+    """
+    Determine if this table should be skipped for admin registration.
+
+    Skip tables that are:
+    1. M2M through tables
+    2. Tables with composite primary keys (Django 5.2+ CompositePrimaryKey)
+    """
+    if table_info.is_m2m_through_table or _has_composite_primary_key(table_info):
+        return True
+    return False
+
+
 def create_admin_class(table_info: TableInfo) -> ast.ClassDef:
     """Creates the AST ClassDef node for a Django ModelAdmin."""
     model_name = to_pascal_case(pluralize(table_info.name))
@@ -132,17 +166,36 @@ def create_admin_class(table_info: TableInfo) -> ast.ClassDef:
 
 def generate_admin_code(tables_info: List[TableInfo], models_module: str = ".models") -> str:
     """Generate code for the Django admin.py file."""
+
+    # Filter out models to include in admin imports (exclude M2M through tables and composite PK tables)
+    models_to_include = [
+        to_pascal_case(pluralize(table.name))
+        for table in tables_info
+        if table.primary_key_columns and not _should_skip_admin_registration(table)
+    ]
+
     imports = [
         create_import("django.contrib", ["admin"]),
-        # Import all models from the models module
-        create_import(models_module, [to_pascal_case(pluralize(table.name)) for table in tables_info if table.primary_key_columns])
+        # Import only models that will be registered (exclude M2M through tables and composite PK tables)
+        create_import(models_module, models_to_include) if models_to_include else None
     ]
+
+    # Remove None imports
+    imports = [imp for imp in imports if imp is not None]
 
     # Create admin class registrations
     registrations = []
     for table in tables_info:
         if not table.primary_key_columns:
             logger.warning(f"Table {table.name} does not have a primary key, skipping admin generation...")
+            continue
+
+        # Skip M2M through tables and composite primary key tables
+        if _should_skip_admin_registration(table):
+            if table.is_m2m_through_table:
+                logger.info(f"Skipping admin registration for M2M through table: {table.name}")
+            elif _has_composite_primary_key(table):
+                logger.info(f"Skipping admin registration for composite primary key table: {table.name}")
             continue
 
         model_name = to_pascal_case(pluralize(table.name))

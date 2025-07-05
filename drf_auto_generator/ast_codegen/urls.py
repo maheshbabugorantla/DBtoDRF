@@ -33,6 +33,11 @@ def generate_urls_ast(tables_info: List[TableInfo], views_module: str = ".views"
         if not table.primary_key_columns:
             logger.warning(f"Table {table.name} does not have a primary key, skipping URL registration...")
             continue
+
+        if table.is_m2m_through_table:
+            logger.info(f"Skipping URL registration for M2M through table: {table.name}")
+            continue
+
         viewset_name = f"{to_pascal_case(pluralize(table.name))}ViewSet"
         # Convert model name to snake_case for URL path
         url_path = pluralize(to_snake_case(table.name))

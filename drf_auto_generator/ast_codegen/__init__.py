@@ -12,6 +12,7 @@ from .urls import generate_urls_code
 from .admin import generate_admin_code
 from .code_generator import CodeGenerator, generate_django_project
 
+
 __all__ = [
     'generate_models_code',
     'generate_serializers_code',

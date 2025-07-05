@@ -103,7 +103,9 @@ def generate_settings_code(project_name: str, app_name: str, kwargs: Dict[str, A
     body.append(add_location(ast.Expr(value=load_dotenv_call)))
 
     # Add SECRET_KEY
-    secret_key = kwargs.get('secret_key', get_random_secret_key())
+    secret_key = kwargs.get('secret_key')
+    if secret_key is None:
+        secret_key = get_random_secret_key()
     body.append(
         create_assign(
             "SECRET_KEY",
@@ -137,6 +139,7 @@ def generate_settings_code(project_name: str, app_name: str, kwargs: Dict[str, A
         'django.contrib.staticfiles',
         # Third party apps
         'rest_framework',
+        'rest_framework.authtoken',
         'corsheaders',
         'drf_spectacular',
         # Local apps
@@ -218,12 +221,22 @@ def generate_settings_code(project_name: str, app_name: str, kwargs: Dict[str, A
     # Add DATABASES
     databases = kwargs.get('config', {}).get('databases', {})
     default_database: DatabaseSettings = databases.get('default', {})
-    default_database_engine = default_database.ENGINE
-    default_database_name = default_database.NAME
-    default_database_user = default_database.USER
-    default_database_password = default_database.PASSWORD
-    default_database_host = default_database.HOST
-    default_database_port = default_database.PORT
+
+    # Handle case where default_database is None or not a DatabaseSettings object
+    if default_database is None or not hasattr(default_database, 'ENGINE'):
+        default_database_engine = ""
+        default_database_name = ""
+        default_database_user = ""
+        default_database_password = ""
+        default_database_host = ""
+        default_database_port = ""
+    else:
+        default_database_engine = default_database.ENGINE
+        default_database_name = default_database.NAME
+        default_database_user = default_database.USER
+        default_database_password = default_database.PASSWORD
+        default_database_host = default_database.HOST
+        default_database_port = default_database.PORT
 
     databases_dict = add_location(ast.Dict(
         keys=[create_string_constant('default')],

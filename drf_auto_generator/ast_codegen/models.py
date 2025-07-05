@@ -9,117 +9,50 @@ from drf_auto_generator.ast_codegen.base import (
     create_none_constant, create_keyword, create_tuple_of_strings, add_location, pluralize
 )
 from drf_auto_generator.introspection_django import TableInfo, ColumnInfo
-from drf_auto_generator.mapper import to_pascal_case
+from drf_auto_generator.mapper import to_pascal_case, map_db_type_to_django
 
 
 logger = logging.getLogger(__name__)
 
-
-DJANGO_FIELD_MAP: Dict[str, str] = {
-    "AutoField": "AutoField",
-    "BigAutoField": "BigAutoField",
-    "BooleanField": "BooleanField",
-    "CharField": "CharField",
-    "DateField": "DateField",
-    "DateTimeField": "DateTimeField",
-    "DecimalField": "DecimalField",
-    "EmailField": "EmailField",
-    "FileField": "FileField",
-    "FilePathField": "FilePathField",
-    "FloatField": "FloatField",
-    "ImageField": "ImageField",
-    "IntegerField": "IntegerField",
-    "GenericIPAddressField": "GenericIPAddressField",
-    "NullBooleanField": "BooleanField", # Map to BooleanField with null=True
-    "PositiveBigIntegerField": "PositiveBigIntegerField",
-    "PositiveIntegerField": "PositiveIntegerField",
-    "PositiveSmallIntegerField": "PositiveSmallIntegerField",
-    "SlugField": "SlugField",
-    "SmallAutoField": "SmallAutoField",
-    "SmallIntegerField": "SmallIntegerField",
-    "TextField": "TextField",
-    "TimeField": "TimeField",
-    "URLField": "URLField",
-    "UUIDField": "UUIDField",
-    "JSONField": "JSONField",
-    # Add more mappings as needed based on database types encountered
-    # Example: Map PostgreSQL 'text' to TextField
-    "text": "TextField",
-    "integer": "IntegerField",
-    "boolean": "BooleanField",
-    "timestamp with time zone": "DateTimeField",
-    "date": "DateField",
-    "numeric": "DecimalField",
-    "character varying": "CharField",
-    "ARRAY": "TextField", # Simple fallback for arrays, consider specific handling
-    "tsvector": "TextField", # Fallback for tsvector
-    # Add mappings for common types like varchar, int, bool etc.
-}
 
 # Options that are handled directly by their presence (True)
 BOOLEAN_OPTIONS = {"primary_key", "unique", "null", "blank"}
 # Options that need specific value types
 NUMERIC_OPTIONS = {"max_length", "max_digits", "decimal_places"}
 
-def _map_db_type_to_django(db_type_string: str) -> str:
-    """Maps a raw database type string to a Django field type name."""
-    # This function needs refinement based on the actual values from introspection
-    # It might need to parse the db_type_string more intelligently
-    mapped = DJANGO_FIELD_MAP.get(db_type_string, "TextField") # Default fallback
-    if db_type_string == "NullBooleanField": # Explicit handling for NullBooleanField
-        mapped = "BooleanField"
-    # Add more specific logic if needed
-    return mapped
+
+def create_model_field(col_info: ColumnInfo, table_info: TableInfo = None) -> ast.Assign:
+    """Creates an AST assignment node for a Django model field."""
+    # Use the proper mapper function that handles composite primary keys
+    django_field_type, field_options_dict = map_db_type_to_django(col_info, table_info)
+
+    # Convert the options dict to AST keywords
+    field_options = []
+    for option_name, option_value in field_options_dict.items():
+        if option_name in BOOLEAN_OPTIONS and isinstance(option_value, bool):
+            field_options.append(create_keyword(option_name, create_boolean_constant(option_value)))
+        elif option_name in NUMERIC_OPTIONS and isinstance(option_value, int):
+            field_options.append(create_keyword(option_name, create_integer_constant(option_value)))
+        elif isinstance(option_value, str):
+            field_options.append(create_keyword(option_name, create_string_constant(option_value)))
+
+    # Add any additional field-specific options that weren't handled by the mapper
+    additional_options = _create_additional_field_options(col_info, django_field_type, table_info)
+    field_options.extend(additional_options)
+
+    field_call = create_attribute_call(
+        obj_name="models",
+        attr_name=django_field_type,
+        keywords=field_options
+    )
+    return create_assign(target=col_info.name, value=field_call)
 
 
-def _create_field_options(col_info: ColumnInfo, django_field_type: str, table_info: TableInfo = None) -> List[ast.keyword]:
-    """Creates AST keyword arguments for a Django model field based on ColumnInfo."""
+def _create_additional_field_options(col_info: ColumnInfo, django_field_type: str, table_info: TableInfo = None) -> List[ast.keyword]:
+    """Creates additional AST keyword arguments for special cases not handled by the main mapper."""
     keywords = []
 
-    # Basic options (null, blank, primary_key, unique)
-    if col_info.nullable or django_field_type == "BooleanField" and col_info.db_type_string == "NullBooleanField":
-        keywords.append(create_keyword("null", create_boolean_constant(True)))
-        # Often, if null is True, blank should also be True for CharField/TextField
-        if django_field_type in ("CharField", "TextField"):
-             keywords.append(create_keyword("blank", create_boolean_constant(True)))
-
-    # Handle primary key logic - special handling for composite PKs
-    if col_info.is_pk:
-        # Check if this table has multiple primary key columns (composite PK)
-        pk_count = len(table_info.primary_key_columns) if table_info else 1
-
-        if pk_count > 1:
-            # For composite primary keys, only mark AutoField/BigAutoField as primary_key=True
-            # Other fields should not be marked as primary key to avoid Django errors
-            if django_field_type in ("AutoField", "BigAutoField"):
-                keywords.append(create_keyword("primary_key", create_boolean_constant(True)))
-            # Non-AutoField columns in composite PKs should not have primary_key=True
-            # The composite uniqueness will be handled by unique_together in Meta
-        else:
-            # Single primary key - safe to mark as primary_key=True
-            keywords.append(create_keyword("primary_key", create_boolean_constant(True)))
-
-    if col_info.is_unique:
-         # Avoid adding unique=True if primary_key=True, as PK implies unique
-        if not col_info.is_pk:
-            keywords.append(create_keyword("unique", create_boolean_constant(True)))
-
-    # Size/Precision options
-    if django_field_type in ("CharField", "TextField") and col_info.internal_size:
-        keywords.append(create_keyword("max_length", create_integer_constant(col_info.internal_size)))
-    elif django_field_type == "DecimalField":
-        if col_info.precision:
-            keywords.append(create_keyword("max_digits", create_integer_constant(col_info.precision)))
-        if col_info.scale is not None: # scale can be 0
-            keywords.append(create_keyword("decimal_places", create_integer_constant(col_info.scale)))
-
-    # Add more field-specific options based on Django field types
-    if django_field_type == "BooleanField" and col_info.db_type_string == "NullBooleanField":
-        # Ensure null=True for NullBooleanField mapping
-        if not any(k.arg == "null" for k in keywords):
-            keywords.append(create_keyword("null", create_boolean_constant(True)))
-
-    # Enum choices
+    # Handle enum choices
     if col_info.enum_values:
         choices_list = ast.List(
             elts=[
@@ -129,25 +62,12 @@ def _create_field_options(col_info: ColumnInfo, django_field_type: str, table_in
             ctx=ast.Load()
         )
         keywords.append(create_keyword("choices", choices_list))
-        # Usually need max_length for CharField with choices
-        if django_field_type == "CharField" and not any(kw.arg == "max_length" for kw in keywords):
-             max_len = max(len(v) for v in col_info.enum_values) if col_info.enum_values else 255
-             keywords.append(create_keyword("max_length", create_integer_constant(max_len)))
+        # Usually need max_length for CharField with choices if not already set
+        if django_field_type == "CharField":
+            max_len = max(len(v) for v in col_info.enum_values) if col_info.enum_values else 255
+            keywords.append(create_keyword("max_length", create_integer_constant(max_len)))
 
     return keywords
-
-
-def create_model_field(col_info: ColumnInfo, table_info: TableInfo = None) -> ast.Assign:
-    """Creates an AST assignment node for a Django model field."""
-    django_field_type = _map_db_type_to_django(col_info.db_type_string)
-    field_options = _create_field_options(col_info, django_field_type, table_info)
-
-    field_call = create_attribute_call(
-        obj_name="models",
-        attr_name=django_field_type,
-        keywords=field_options
-    )
-    return create_assign(target=col_info.name, value=field_call)
 
 
 def create_relationship_field(rel_info: Dict[str, Any]) -> ast.Assign:
@@ -220,54 +140,62 @@ def create_model_meta(table_info: TableInfo) -> ast.ClassDef:
         ("verbose_name_plural", create_string_constant(table_info.model_name + "s")),
     ]
 
-    # Handle composite primary keys for any table (not just through tables)
+    # Handle composite primary keys - but distinguish between M2M through tables and true composite PKs
     if len(table_info.primary_key_columns) > 1:
-        # For any table with composite PK, we need to find the actual field names that exist in the model
-        # Instead of using database column names, use the relationship field names where applicable
-        actual_pk_fields = []
+        # Check if this is an M2M through table (same logic as in create_model_class)
+        is_m2m_through_table = False
 
-        for pk_col in table_info.primary_key_columns:
-            # Check if this PK column is handled by a relationship
-            field_name = None
+        fk_relationships = [rel for rel in table_info.relationships if rel["type"] == "many-to-one"]
 
-            # First, check if there's a relationship that handles this column
-            for rel in table_info.relationships:
-                if pk_col in rel.get("source_columns", []):
-                    field_name = rel["name"]
-                    break
-
-            # If not handled by relationship, check if it's a regular field
-            if not field_name:
-                for field_dict in table_info.fields:
-                    if (field_dict.get("original_column_name") == pk_col and
-                        not field_dict.get("is_handled_by_relation", False)):
-                        field_name = field_dict["name"]
-                        break
-
-            if field_name:
-                actual_pk_fields.append(field_name)
-            else:
-                # Fallback to original column name if we can't find the mapped field
-                actual_pk_fields.append(pk_col)
-
-        if actual_pk_fields and len(actual_pk_fields) > 1:
-            # Check if any field in the composite PK is already marked as primary_key=True (AutoField)
-            primary_key_field = None
+        if (len(fk_relationships) == 2 and
+            len(table_info.primary_key_columns) == 2):
+            # Check if all PK columns are handled by FK relationships
+            pk_cols_handled_by_fk = 0
             for pk_col in table_info.primary_key_columns:
-                for col in table_info.columns:
-                    if col.name == pk_col and col.db_type_string in ("AutoField", "BigAutoField"):
-                        # Find the field name for this column
-                        for field_dict in table_info.fields:
-                            if (field_dict.get("original_column_name") == pk_col and
-                                not field_dict.get("is_handled_by_relation", False)):
-                                primary_key_field = field_dict["name"]
-                                break
+                for rel in fk_relationships:
+                    if pk_col in rel.get("source_columns", []):
+                        pk_cols_handled_by_fk += 1
                         break
 
-            # Always add unique_together for ALL composite primary key fields
-            # This preserves the exact same uniqueness constraint as the original database
-            # Even if one field is marked as primary_key=True, the composite constraint is still needed
-            meta_options.append(("unique_together", create_tuple_of_strings(actual_pk_fields)))
+            if pk_cols_handled_by_fk == len(table_info.primary_key_columns):
+                is_m2m_through_table = True
+
+        # Only add unique_together for M2M through tables
+        # Tables with CompositePrimaryKey handle the constraint automatically
+        if is_m2m_through_table:
+            # For M2M through tables, use unique_together with relationship field names
+            actual_pk_fields = []
+
+            for pk_col in table_info.primary_key_columns:
+                # Check if this PK column is handled by a relationship
+                field_name = None
+
+                # First, check if there's a relationship that handles this column
+                for rel in table_info.relationships:
+                    if pk_col in rel.get("source_columns", []):
+                        field_name = rel["name"]
+                        break
+
+                # If not handled by relationship, check if it's a regular field
+                if not field_name:
+                    for field_dict in table_info.fields:
+                        if (field_dict.get("original_column_name") == pk_col and
+                            not field_dict.get("is_handled_by_relation", False)):
+                            field_name = field_dict["name"]
+                            break
+
+                if field_name:
+                    actual_pk_fields.append(field_name)
+                else:
+                    # Fallback to original column name if we can't find the mapped field
+                    actual_pk_fields.append(pk_col)
+
+            if actual_pk_fields and len(actual_pk_fields) > 1:
+                # Add unique_together for M2M through tables
+                meta_options.append(("unique_together", create_tuple_of_strings(actual_pk_fields)))
+                logger.debug(f"Added unique_together for M2M through table {table_info.name}: {actual_pk_fields}")
+        else:
+            logger.debug(f"Skipping unique_together for table {table_info.name} - using CompositePrimaryKey instead")
 
     # Add Indexes
     if table_info.meta_indexes:
@@ -313,7 +241,11 @@ def create_str_method(table_info: TableInfo) -> ast.FunctionDef:
         body.extend([
             add_location(ast.Assign(
                 targets=[add_location(ast.Name(id='value', ctx=ast.Store()))],
-                value=create_attribute_call('self', 'getattr', args=[create_string_constant(str_col.name), create_none_constant()])
+                value=create_call('getattr', args=[
+                    add_location(ast.Name(id='self', ctx=ast.Load())),
+                    create_string_constant(str_col.name),
+                    create_none_constant()
+                ])
             )),
             add_location(ast.If(
                 test=add_location(ast.Name(id='value', ctx=ast.Load())),
@@ -331,10 +263,13 @@ def create_str_method(table_info: TableInfo) -> ast.FunctionDef:
                 value=add_location(ast.JoinedStr(values=[
                     create_string_constant(f"{table_info.model_name} "),
                     add_location(ast.FormattedValue(
-                        value=create_attribute_call(
-                            'self',
+                        value=create_call(
                             'getattr',
-                            args=[create_string_constant(pk_name), create_string_constant("N/A")]
+                            args=[
+                                add_location(ast.Name(id='self', ctx=ast.Load())),
+                                create_string_constant(pk_name),
+                                create_string_constant("N/A")
+                            ]
                         ),
                         conversion=-1, # No conversion
                         format_spec=None
@@ -371,8 +306,71 @@ def create_model_class(table_info: TableInfo) -> ast.ClassDef:
     # Docstring
     model_body.append(add_location(ast.Expr(value=create_string_constant(f"Represents the '{table_info.name}' table."))))
 
+    # Handle composite primary keys - but distinguish between M2M through tables and true composite PKs
+    if len(table_info.primary_key_columns) > 1:
+        # Check if this is an M2M through table
+        is_m2m_through_table = False
+
+        # M2M through tables typically:
+        # 1. Have exactly 2 foreign key relationships
+        # 2. Have exactly 2 primary key columns
+        # 3. Those PK columns are the same as the FK columns
+        fk_relationships = [rel for rel in table_info.relationships if rel["type"] == "many-to-one"]
+
+        if (len(fk_relationships) == 2 and
+            len(table_info.primary_key_columns) == 2):
+            # Check if all PK columns are handled by FK relationships
+            pk_cols_handled_by_fk = 0
+            for pk_col in table_info.primary_key_columns:
+                for rel in fk_relationships:
+                    if pk_col in rel.get("source_columns", []):
+                        pk_cols_handled_by_fk += 1
+                        break
+
+            if pk_cols_handled_by_fk == len(table_info.primary_key_columns):
+                is_m2m_through_table = True
+                logger.debug(f"Table {table_info.name} identified as M2M through table - using unique_together instead of CompositePrimaryKey")
+
+        # Only use CompositePrimaryKey for true composite primary keys (not M2M through tables)
+        if not is_m2m_through_table:
+            # Create CompositePrimaryKey field for true composite PKs
+            pk_field_names = []
+            for pk_col in table_info.primary_key_columns:
+                # Find the Django field name for this column
+                field_name = None
+
+                # First, check if there's a relationship that handles this column
+                for rel in table_info.relationships:
+                    if pk_col in rel.get("source_columns", []):
+                        field_name = rel["name"]
+                        break
+
+                # If not handled by relationship, check if it's a regular field
+                if not field_name:
+                    for field_dict in table_info.fields:
+                        if (field_dict.get("original_column_name") == pk_col and
+                            not field_dict.get("is_handled_by_relation", False)):
+                            field_name = field_dict["name"]
+                            break
+
+                if field_name:
+                    pk_field_names.append(field_name)
+                else:
+                    # Fallback to original column name if we can't find the mapped field
+                    pk_field_names.append(pk_col)
+
+            # Create the CompositePrimaryKey field
+            composite_pk_call = create_attribute_call(
+                obj_name="models",
+                attr_name="CompositePrimaryKey",
+                args=[create_string_constant(name) for name in pk_field_names]
+            )
+            pk_assign = create_assign(target="pk", value=composite_pk_call)
+            model_body.append(pk_assign)
+
+            logger.info(f"Created CompositePrimaryKey for table {table_info.name} with fields: {pk_field_names}")
+
     # Fields - Filter out fields that are handled by relationships
-    # (similar to the Jinja2 template: if not field.is_handled_by_relation)
     fields_to_include = []
     for col in table_info.columns:
         # Check if this column is handled by a relationship
