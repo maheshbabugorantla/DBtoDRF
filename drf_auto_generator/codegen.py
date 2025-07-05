@@ -1,10 +1,8 @@
 import logging
-import os
-import stat  # For setting file permissions
 import ast
 import astor
 from pathlib import Path
-from typing import List, Dict, Any, Set, Optional
+from typing import Dict, Any
 from jinja2 import (
     Environment,
     FileSystemLoader,
@@ -13,10 +11,7 @@ from jinja2 import (
 )
 from inflect import engine as inflect_engine
 
-# Import from the new Django introspection module
-from drf_auto_generator.introspection_django import TableInfo
 from drf_auto_generator.config_validation import ToolConfigSchema
-from drf_auto_generator.test_codegen_utils import _get_faker_value, _generate_invalid_value
 from .generate_tests_using_ast import (
     OpenAPISpecHandler,
     SchemaAnalyzer,
