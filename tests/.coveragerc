@@ -1,0 +1,19 @@
+[run]
+omit =
+    */tests/*
+    */venv/*
+    */__pycache__/*
+
+[report]
+exclude_lines =
+    pragma: no cover
+    def __repr__
+    raise AssertionError
+    raise NotImplementedError
+    if __name__ == .__main__.:
+
+show_missing = True
+precision = 2
+
+[html]
+directory = htmlcov

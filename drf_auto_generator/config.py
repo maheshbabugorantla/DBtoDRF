@@ -4,16 +4,13 @@ import logging
 import sys
 import os
 import keyword
-import json  # Keep for potential use in settings template, though not validation
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Literal, Union, TypedDict
 
 from pydantic import (
     BaseModel,
     Field,
-    validator,
     ValidationError,
-    root_validator,
     field_validator,
     model_validator,
 )
