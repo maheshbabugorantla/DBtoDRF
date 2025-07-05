@@ -108,7 +108,7 @@ def _create_filterset_fields(table_info: TableInfo) -> Dict[str, List[str]]:
                                        "PositiveIntegerField", "PositiveBigIntegerField", "PositiveSmallIntegerField"]:
                         filterset_fields[field_name] = ['exact', 'gte', 'lte']
                     elif field_type in ["DateField", "DateTimeField"]:
-                        filterset_fields[field_name] = ['exact', 'gte', 'lte', 'date']
+                        filterset_fields[field_name] = ['exact', 'gte', 'lte']
                     elif field_type == "BooleanField":
                         filterset_fields[field_name] = ['exact']
                     else:
