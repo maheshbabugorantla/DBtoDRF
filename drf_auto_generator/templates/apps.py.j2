@@ -1,7 +1,0 @@
-from django.apps import AppConfig
-
-class {{ app_name|capitalize }}Config(AppConfig):
-    """App configuration for the '{{ app_name }}' app."""
-    default_auto_field = 'django.db.models.BigAutoField' # Or match project default
-    name = '{{ app_name }}'
-    verbose_name = '{{ app_name|capitalize }} API'
