@@ -89,11 +89,17 @@ def generate_openapi_schema_object(
             elif relation_style == "nested":
                 item_schema = {"$ref": f"#/components/schemas/{target_model_name}"}
 
+            # Safe pluralization for description
+            try:
+                plural_name = p.plural(target_model_name)
+            except Exception:
+                plural_name = f"{target_model_name}s"
+
             properties[rel_name] = {
                 "type": "array",
                 "items": item_schema,
                 "readOnly": True,  # Reverse relations are typically read-only in list/detail views
-                "description": f"Related {p.plural(target_model_name)}",
+                "description": f"Related {plural_name}",
             }
 
     return {
@@ -177,70 +183,104 @@ def generate_openapi_input_schema(
     }
 
 
-def generate_endpoints_on_table_indexes_and_constraints(table: TableInfo, config: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Generates OpenAPI Path Item Objects for indexes and unique constraints.
-    These allow querying by fields other than primary key - but only for actual database columns.
-    """
+def _filter_db_fields(table: TableInfo, field_names: List[str]) -> List[str]:
+    """Filters field names to only include actual database columns."""
+    actual_db_fields = []
+    for field_name in field_names:
+        field = next((f for f in table.fields if f["name"] == field_name), None)
+        if (field and not field.get("is_handled_by_relation", False) and
+            not field_name.endswith("_rel")):
+            actual_db_fields.append(field_name)
+    return actual_db_fields
+
+
+def _create_field_parameter(field_name: str, field_schema: Dict[str, Any],
+                           param_type: str = "query", required: bool = True) -> Dict[str, Any]:
+    """Creates a parameter for field filtering."""
+    return {
+        "name": field_name if param_type == "query" else "value",
+        "in": param_type,
+        "required": required,
+        "description": f"The {field_name} {'value to look up' if param_type == 'path' else 'to filter by'}",
+        "schema": field_schema
+    }
+
+
+def _generate_unique_field_endpoints(table: TableInfo, model_name: str,
+                                   table_name_plural: str, tag_name: str,
+                                   schema_ref: str) -> Dict[str, Any]:
+    """Generates endpoints for unique field lookups."""
     paths = {}
-    model_name = table.model_name
-    schema_ref = f"#/components/schemas/{model_name}"
-    tag_name = model_name
 
-    # Use inflect for pluralization
-    try:
-        table_name_plural = p.plural(table.name)
-    except Exception:
-        table_name_plural = f"{table.name}s"
-
-    logger.debug(f"Analyzing table {table.name} for constraint endpoints:")
-    logger.debug(f"  Fields: {[f['name'] for f in table.fields]}")
-    logger.debug(f"  Meta constraints: {table.meta_constraints}")
-    logger.debug(f"  Meta indexes: {table.meta_indexes}")
-
-    # Process unique constraints (both single-field and multi-field)
-    # Only for actual database columns, not relationship fields
     for field in table.fields:
         field_name = field["name"]
-        logger.debug(f"  Checking field {field_name}: is_pk={field.get('is_pk', False)}, is_handled_by_relation={field.get('is_handled_by_relation', False)}, unique={field['options'].get('unique', False)}")
 
-        # Skip primary key fields (these are already handled by default CRUD endpoints)
-        if field["is_pk"]:
+        # Skip primary key fields, relationship fields, and non-unique fields
+        if (field["is_pk"] or
+            field.get("is_handled_by_relation", False) or
+            field_name.endswith("_rel") or
+            not field.get("options", {}).get("unique", False)):
             continue
 
-        # Skip relationship fields - only process actual database columns
-        if field.get("is_handled_by_relation", False):
+        field_path = f"/{table_name_plural}/by_{field_name}/{{value}}"
+        field_schema = field.get("openapi_schema", {"type": "string"})
+
+        paths[field_path] = {
+            "parameters": [_create_field_parameter(field_name, field_schema, "path")],
+            "get": {
+                "tags": [tag_name],
+                "summary": f"Retrieve {model_name} by {field_name}",
+                "operationId": f"retrieve{model_name}By{field_name.capitalize()}",
+                "responses": {
+                    "200": {
+                        "description": f"Details of {model_name} matching the specified {field_name}",
+                        "content": {"application/json": {"schema": {"$ref": schema_ref}}}
+                    },
+                    "404": {"$ref": "#/components/responses/NotFound"},
+                    "default": {"$ref": "#/components/responses/Error"}
+                }
+            }
+        }
+
+        logger.debug(f"Added endpoint for unique field lookup: {field_path}")
+
+    return paths
+
+
+def _generate_composite_constraint_endpoints(table: TableInfo, model_name: str,
+                                           table_name_plural: str, tag_name: str,
+                                           schema_ref: str) -> Dict[str, Any]:
+    """Generates endpoints for composite unique constraints."""
+    paths = {}
+
+    for constraint in table.meta_constraints:
+        if constraint["type"] != "unique" or len(constraint["fields"]) <= 1:
             continue
 
-        # Skip fields that end with '_rel' (relationship field naming pattern)
-        if field_name.endswith("_rel"):
+        actual_db_fields = _filter_db_fields(table, constraint["fields"])
+        if not actual_db_fields:
             continue
 
-        # Look for single-field unique indexes on actual database columns
-        if field["options"].get("unique", False):
-            field_path = f"/{table_name_plural}/by_{field_name}/{{value}}"
-            logger.debug(f"  Adding unique field endpoint: {field_path}")
+        endpoint_name = "_and_".join(actual_db_fields)
+        endpoint_path = f"/{table_name_plural}/by_{endpoint_name}"
 
-            # Get the field's schema to determine parameter format
-            field_schema = field.get("openapi_schema", {"type": "string"})
+        parameters = []
+        for field_name in actual_db_fields:
+            field = next((f for f in table.fields if f["name"] == field_name), None)
+            if field:
+                field_schema = field.get("openapi_schema", {"type": "string"})
+                parameters.append(_create_field_parameter(field_name, field_schema, "query"))
 
-            paths[field_path] = {
-                "parameters": [
-                    {
-                        "name": "value",
-                        "in": "path",
-                        "required": True,
-                        "description": f"The {field_name} value to look up",
-                        "schema": field_schema
-                    }
-                ],
+        if parameters:
+            paths[endpoint_path] = {
+                "parameters": parameters,
                 "get": {
                     "tags": [tag_name],
-                    "summary": f"Retrieve {model_name} by {field_name}",
-                    "operationId": f"retrieve{model_name}By{field_name.capitalize()}",
+                    "summary": f"Retrieve {model_name} by composite unique constraint",
+                    "operationId": f"retrieve{model_name}By{endpoint_name.capitalize().replace('_', '')}",
                     "responses": {
                         "200": {
-                            "description": f"Details of {model_name} matching the specified {field_name}",
+                            "description": f"Details of {model_name} matching the compound constraint",
                             "content": {"application/json": {"schema": {"$ref": schema_ref}}}
                         },
                         "404": {"$ref": "#/components/responses/NotFound"},
@@ -249,117 +289,52 @@ def generate_endpoints_on_table_indexes_and_constraints(table: TableInfo, config
                 }
             }
 
-            logger.debug(f"Added endpoint for unique field lookup: {field_path}")
+            logger.debug(f"Added endpoint for compound unique constraint: {endpoint_path}")
 
-    # Process multi-field unique constraints (only for actual database columns)
-    for constraint in table.meta_constraints:
-        if constraint["type"] == "unique":
-            constraint_fields = constraint["fields"]
-            # Skip single-field constraints as they're handled above
-            if len(constraint_fields) <= 1:
-                continue
+    return paths
 
-            # Filter out relationship fields - only include actual database columns
-            actual_db_fields = []
-            for field_name in constraint_fields:
-                field = next((f for f in table.fields if f["name"] == field_name), None)
-                if (field and not field.get("is_handled_by_relation", False) and
-                    not field_name.endswith("_rel")):
-                    actual_db_fields.append(field_name)
 
-            if not actual_db_fields:
-                continue  # Skip if no actual database fields
+def _generate_index_endpoints(table: TableInfo, model_name: str,
+                            table_name_plural: str, tag_name: str,
+                            schema_ref: str) -> Dict[str, Any]:
+    """Generates endpoints for index-based filtering."""
+    paths = {}
 
-            # Create an endpoint with multiple query parameters for actual DB fields
-            endpoint_name = "_and_".join(actual_db_fields)
-            endpoint_path = f"/{table_name_plural}/by_{endpoint_name}"
+    # Safe pluralization helper
+    def safe_plural(word):
+        try:
+            return p.plural(word)
+        except Exception:
+            return f"{word}s"
 
-            # Add a query parameter for each actual database field in the constraint
-            parameters = []
-            for field_name in actual_db_fields:
-                field = next((f for f in table.fields if f["name"] == field_name), None)
-                if not field:  # Skip if the field is not found
-                    continue
-
-                field_schema = field.get("openapi_schema", {"type": "string"})
-                parameters.append({
-                    "name": field_name,
-                    "in": "query",
-                    "required": True,
-                    "description": f"The {field_name} to filter by",
-                    "schema": field_schema
-                })
-
-            if parameters:
-                paths[endpoint_path] = {
-                    "parameters": parameters,
-                    "get": {
-                        "tags": [tag_name],
-                        "summary": f"Retrieve {model_name} by composite unique constraint",
-                        "operationId": f"retrieve{model_name}By{endpoint_name.capitalize().replace('_', '')}",
-                        "responses": {
-                            "200": {
-                                "description": f"Details of {model_name} matching the compound constraint",
-                                "content": {"application/json": {"schema": {"$ref": schema_ref}}}
-                            },
-                            "404": {"$ref": "#/components/responses/NotFound"},
-                            "default": {"$ref": "#/components/responses/Error"}
-                        }
-                    }
-                }
-
-                logger.debug(f"Added endpoint for compound unique constraint: {endpoint_path}")
-
-    # Process indexes (non-unique ones will return lists) - only for actual database columns
     for index in table.meta_indexes:
         index_fields = index["fields"]
         if not index_fields:
             continue
 
-        # Filter out relationship fields - only include actual database columns
-        actual_db_index_fields = []
-        for field_name in index_fields:
-            field = next((f for f in table.fields if f["name"] == field_name), None)
-            if (field and not field.get("is_handled_by_relation", False) and
-                not field_name.endswith("_rel")):
-                actual_db_index_fields.append(field_name)
-
+        actual_db_index_fields = _filter_db_fields(table, index_fields)
         if not actual_db_index_fields:
-            continue  # Skip if no actual database fields in this index
+            continue
 
-        # Skip indexes on a single field that's already unique (handled above)
         if len(actual_db_index_fields) == 1:
             field_name = actual_db_index_fields[0]
             field = next((f for f in table.fields if f["name"] == field_name), None)
-            if not field:  # Skip if the field is not found
+
+            if not field or field.get("options", {}).get("unique", False):
                 continue
 
-            if field["options"].get("unique", False):
-                continue
-
-            # Add endpoint for single-field non-unique index (returns a list)
             field_path = f"/{table_name_plural}/filter_by_{field_name}/{{value}}"
-
-            # Get the field's schema to determine parameter format
             field_schema = field.get("openapi_schema", {"type": "string"})
 
             paths[field_path] = {
-                "parameters": [
-                    {
-                        "name": "value",
-                        "in": "path",
-                        "required": True,
-                        "description": f"The {field_name} value to filter by",
-                        "schema": field_schema
-                    }
-                ],
+                "parameters": [_create_field_parameter(field_name, field_schema, "path")],
                 "get": {
                     "tags": [tag_name],
-                    "summary": f"List {p.plural(model_name)} filtered by {field_name}",
-                    "operationId": f"list{p.plural(model_name)}By{field_name.capitalize()}",
+                    "summary": f"List {safe_plural(model_name)} filtered by {field_name}",
+                    "operationId": f"list{safe_plural(model_name)}By{field_name.capitalize()}",
                     "responses": {
                         "200": {
-                            "description": f"List of {p.plural(model_name)} matching the specified {field_name}",
+                            "description": f"List of {safe_plural(model_name)} matching the specified {field_name}",
                             "content": {
                                 "application/json": {
                                     "schema": {
@@ -376,36 +351,26 @@ def generate_endpoints_on_table_indexes_and_constraints(table: TableInfo, config
 
             logger.debug(f"Added endpoint for non-unique index field lookup: {field_path}")
         else:
-            # Multi-field index (returns a list) - only for actual database columns
             endpoint_name = "_and_".join(actual_db_index_fields)
             endpoint_path = f"/{table_name_plural}/filter_by_{endpoint_name}"
 
-            # Add a query parameter for each actual database field in the index
             parameters = []
             for field_name in actual_db_index_fields:
                 field = next((f for f in table.fields if f["name"] == field_name), None)
-                if not field:  # Skip if the field is not found
-                    continue
-
-                field_schema = field.get("openapi_schema", {"type": "string"})
-                parameters.append({
-                    "name": field_name,
-                    "in": "query",
-                    "required": False,  # Make optional for filtering flexibility
-                    "description": f"The {field_name} to filter by",
-                    "schema": field_schema
-                })
+                if field:
+                    field_schema = field.get("openapi_schema", {"type": "string"})
+                    parameters.append(_create_field_parameter(field_name, field_schema, "query", False))
 
             if parameters:
                 paths[endpoint_path] = {
                     "parameters": parameters,
                     "get": {
                         "tags": [tag_name],
-                        "summary": f"List {p.plural(model_name)} filtered by index fields",
-                        "operationId": f"list{p.plural(model_name)}By{endpoint_name.capitalize().replace('_', '')}",
+                        "summary": f"List {safe_plural(model_name)} filtered by index fields",
+                        "operationId": f"list{safe_plural(model_name)}By{endpoint_name.capitalize().replace('_', '')}",
                         "responses": {
                             "200": {
-                                "description": f"List of {p.plural(model_name)} matching the filter criteria",
+                                "description": f"List of {safe_plural(model_name)} matching the filter criteria",
                                 "content": {
                                     "application/json": {
                                         "schema": {
@@ -421,6 +386,36 @@ def generate_endpoints_on_table_indexes_and_constraints(table: TableInfo, config
                 }
 
                 logger.debug(f"Added endpoint for multi-field index: {endpoint_path}")
+
+    return paths
+
+
+def generate_endpoints_on_table_indexes_and_constraints(table: TableInfo, config: Dict[str, Any]) -> Dict[str, Any]:
+    """Generates OpenAPI Path Item Objects for indexes and unique constraints."""
+    paths = {}
+    model_name = table.model_name
+    schema_ref = f"#/components/schemas/{model_name}"
+    tag_name = model_name
+
+    try:
+        table_name_plural = p.plural(table.name)
+    except Exception:
+        table_name_plural = f"{table.name}s"
+
+    logger.debug(f"Analyzing table {table.name} for constraint endpoints:")
+    logger.debug(f"  Fields: {[f['name'] for f in table.fields]}")
+    logger.debug(f"  Meta constraints: {table.meta_constraints}")
+    logger.debug(f"  Meta indexes: {table.meta_indexes}")
+
+    # Generate different types of endpoints
+    unique_paths = _generate_unique_field_endpoints(table, model_name, table_name_plural, tag_name, schema_ref)
+    paths.update(unique_paths)
+
+    constraint_paths = _generate_composite_constraint_endpoints(table, model_name, table_name_plural, tag_name, schema_ref)
+    paths.update(constraint_paths)
+
+    index_paths = _generate_index_endpoints(table, model_name, table_name_plural, tag_name, schema_ref)
+    paths.update(index_paths)
 
     logger.debug(f"Generated {len(paths)} constraint-based endpoints for table {table.name}")
     return paths
@@ -460,7 +455,6 @@ def generate_m2m_endpoints(
         if not pk_field_info:
             continue  # Skip if no PK field found
 
-        pk_name = pk_field_info["name"]
         pk_schema = pk_field_info.get("openapi_schema", {"type": "integer"})
 
         paths[list_path] = {
@@ -630,51 +624,85 @@ def generate_m2m_endpoints(
     return paths
 
 
-def generate_paths_for_table(
-    table: TableInfo, config: Dict[str, Any]
-) -> Dict[str, Any]:
-    """Generates OpenAPI Path Item Objects for CRUD operations for a table."""
-    paths = {}
-    # Use inflect for more reliable pluralization, fallback to simple 's'
-    try:
-        table_name_plural = p.plural(table.name)
-    except Exception:
-        table_name_plural = f"{table.name}s"
+def _create_path_parameter(name: str, description: str, schema: Dict[str, Any]) -> Dict[str, Any]:
+    """Creates a standardized path parameter."""
+    return {
+        "name": name,
+        "in": "path",
+        "required": True,
+        "description": description,
+        "schema": schema
+    }
 
-    model_name = table.model_name
-    pk_field_info = next((f for f in table.fields if f["is_pk"]), None)
 
-    # Skip M2M through tables if configured
-    is_m2m_through_table = getattr(table, "is_m2m_through_table", False)
-    skip_m2m_through_tables = config.get("skip_m2m_through_tables", True)
-    # if is_m2m_through_table and skip_m2m_through_tables:
-    #     logger.debug(f"Skipping path generation for M2M through table {table.name}")
-    #     return {}
+def _create_standard_responses(model_name: str, schema_ref: str) -> Dict[str, Any]:
+    """Creates standard CRUD response definitions."""
+    return {
+        "retrieve": {
+            "200": {
+                "description": f"Details of {model_name}.",
+                "content": {"application/json": {"schema": {"$ref": schema_ref}}},
+            },
+            "404": {"$ref": "#/components/responses/NotFound"},
+            "default": {"$ref": "#/components/responses/Error"},
+        },
+        "create": {
+            "201": {
+                "description": f"{model_name} created successfully.",
+                "content": {"application/json": {"schema": {"$ref": schema_ref}}},
+            },
+            "400": {"$ref": "#/components/responses/InvalidInput"},
+            "default": {"$ref": "#/components/responses/Error"},
+        },
+        "update": {
+            "200": {
+                "description": f"{model_name} updated successfully.",
+                "content": {"application/json": {"schema": {"$ref": schema_ref}}},
+            },
+            "400": {"$ref": "#/components/responses/InvalidInput"},
+            "404": {"$ref": "#/components/responses/NotFound"},
+            "default": {"$ref": "#/components/responses/Error"},
+        },
+        "delete": {
+            "204": {"description": f"{model_name} deleted successfully."},
+            "404": {"$ref": "#/components/responses/NotFound"},
+            "default": {"$ref": "#/components/responses/Error"},
+        }
+    }
 
-    if not pk_field_info:
-        logger.warning(
-            f"Table {table.name} has no primary key field identified in 'fields'. Skipping CRUD path generation."
-        )
-        return {}
 
-    pk_name = pk_field_info["name"]
-    pk_schema = pk_field_info.get(
-        "openapi_schema", {"type": "integer"}
-    )  # Get PK schema
+def _create_pagination_schema(schema_ref: str, model_name: str) -> Dict[str, Any]:
+    """Creates pagination response schema."""
+    return {
+        "type": "object",
+        "properties": {
+            "count": {
+                "type": "integer",
+                "description": "Total number of items.",
+            },
+            "next": {
+                "type": "string",
+                "format": "uri",
+                "nullable": True,
+                "description": "URL to the next page.",
+            },
+            "previous": {
+                "type": "string",
+                "format": "uri",
+                "nullable": True,
+                "description": "URL to the previous page.",
+            },
+            "results": {
+                "type": "array",
+                "items": {"$ref": schema_ref},
+            },
+        },
+    }
 
-    tag_name = model_name  # Use model name for tag
-    schema_ref = f"#/components/schemas/{model_name}"
-    input_schema_ref = f"#/components/schemas/{model_name}Input"
-    patch_schema_ref = (
-        f"#/components/schemas/{model_name}PatchInput"  # Separate schema for PATCH
-    )
 
-    # --- List and Create Path ---
-    list_create_path = f"/{table_name_plural}"
-
-    # Build query parameters for the list endpoint
+def _build_query_parameters(table: TableInfo) -> List[Dict[str, Any]]:
+    """Builds query parameters for list endpoint."""
     query_parameters = [
-        # Standard pagination params
         {
             "name": "page",
             "in": "query",
@@ -689,7 +717,6 @@ def generate_paths_for_table(
             "schema": {"type": "integer"},
             "description": "Number of results per page",
         },
-        # Standard ordering and search
         {
             "name": "ordering",
             "in": "query",
@@ -708,7 +735,7 @@ def generate_paths_for_table(
 
     # Add filtering parameters for foreign key relationships
     for rel in table.relationships:
-        if rel["type"] == "many-to-one":  # ForeignKey relationships
+        if rel["type"] == "many-to-one":
             rel_name = rel["name"]
             query_parameters.append({
                 "name": rel_name,
@@ -722,15 +749,12 @@ def generate_paths_for_table(
     for index in table.meta_indexes:
         index_fields = index.get("fields", [])
         for field_name in index_fields:
-            # Skip if already added as relationship filter
             if any(param["name"] == field_name for param in query_parameters):
                 continue
 
-            # Find field info for schema
             field_info = next((f for f in table.fields if f.get("name") == field_name), None)
             if field_info and not field_info.get("is_pk", False):
                 field_schema = field_info.get("openapi_schema", {"type": "string"})
-                # Extract just the type for query parameter
                 param_schema = {"type": field_schema.get("type", "string")}
 
                 query_parameters.append({
@@ -759,181 +783,179 @@ def generate_paths_for_table(
                 "description": f"Filter by {field_name} (exact match)",
             })
 
-    paths[list_create_path] = {
-        # --- GET (List) ---
-        "get": {
-            "tags": [tag_name],
-            "summary": f"List {p.plural(model_name)}",
-            "operationId": f"list{p.plural(model_name)}",
-            "parameters": query_parameters,
-            "responses": {
-                "200": {
-                    "description": f"Successfully retrieved list of {p.plural(model_name)}.",
-                    "content": {
-                        "application/json": {
-                            # Schema should reflect pagination structure if used
-                            "schema": {
-                                "type": "object",
-                                "properties": {
-                                    "count": {
-                                        "type": "integer",
-                                        "description": "Total number of items.",
-                                    },
-                                    "next": {
-                                        "type": "string",
-                                        "format": "uri",
-                                        "nullable": True,
-                                        "description": "URL to the next page.",
-                                    },
-                                    "previous": {
-                                        "type": "string",
-                                        "format": "uri",
-                                        "nullable": True,
-                                        "description": "URL to the previous page.",
-                                    },
-                                    "results": {
-                                        "type": "array",
-                                        "items": {"$ref": schema_ref},
-                                    },
-                                },
-                            }
-                        }
-                    },
-                },
-                "default": {
-                    "$ref": "#/components/responses/Error"
-                },  # Generic error response
-            },
-        },
-        # --- POST (Create) ---
-        "post": {
-            "tags": [tag_name],
-            "summary": f"Create a new {model_name}",
-            "operationId": f"create{model_name}",
-            "requestBody": {
-                "description": f"{model_name} object to create.",
-                "required": True,
+    return query_parameters
+
+
+def _generate_list_endpoint(table: TableInfo, model_name: str, table_name_plural: str,
+                          tag_name: str, schema_ref: str) -> Dict[str, Any]:
+    """Generates the list (GET) endpoint."""
+    query_parameters = _build_query_parameters(table)
+
+    # Safe pluralization helper
+    def safe_plural(word):
+        try:
+            return p.plural(word)
+        except Exception:
+            return f"{word}s"
+
+    return {
+        "tags": [tag_name],
+        "summary": f"List {safe_plural(model_name)}",
+        "operationId": f"list{safe_plural(model_name)}",
+        "parameters": query_parameters,
+        "responses": {
+            "200": {
+                "description": f"Successfully retrieved list of {safe_plural(model_name)}.",
                 "content": {
-                    "application/json": {"schema": {"$ref": input_schema_ref}},
-                    "application/x-www-form-urlencoded": {
-                        "schema": {"$ref": input_schema_ref}
-                    },
-                    "multipart/form-data": {
-                        "schema": {"$ref": input_schema_ref}
-                    },  # If file uploads possible
+                    "application/json": {
+                        "schema": _create_pagination_schema(schema_ref, model_name)
+                    }
                 },
             },
-            "responses": {
-                "201": {
-                    "description": f"{model_name} created successfully.",
-                    "content": {"application/json": {"schema": {"$ref": schema_ref}}},
-                },
-                "400": {"$ref": "#/components/responses/InvalidInput"},
-                "default": {"$ref": "#/components/responses/Error"},
-            },
+            "default": {"$ref": "#/components/responses/Error"},
         },
     }
 
-    # --- Detail, Update, Partial Update, Delete Path ---
+
+def _generate_create_endpoint(model_name: str, tag_name: str, input_schema_ref: str) -> Dict[str, Any]:
+    """Generates the create (POST) endpoint."""
+    responses = _create_standard_responses(model_name, f"#/components/schemas/{model_name}")
+
+    return {
+        "tags": [tag_name],
+        "summary": f"Create a new {model_name}",
+        "operationId": f"create{model_name}",
+        "requestBody": {
+            "description": f"{model_name} object to create.",
+            "required": True,
+            "content": {
+                "application/json": {"schema": {"$ref": input_schema_ref}},
+                "application/x-www-form-urlencoded": {"schema": {"$ref": input_schema_ref}},
+                "multipart/form-data": {"schema": {"$ref": input_schema_ref}},
+            },
+        },
+        "responses": responses["create"],
+    }
+
+
+def _generate_detail_endpoint(model_name: str, tag_name: str, schema_ref: str) -> Dict[str, Any]:
+    """Generates the detail (GET) endpoint."""
+    responses = _create_standard_responses(model_name, schema_ref)
+
+    return {
+        "tags": [tag_name],
+        "summary": f"Retrieve a specific {model_name}",
+        "operationId": f"retrieve{model_name}",
+        "responses": responses["retrieve"],
+    }
+
+
+def _generate_update_endpoint(model_name: str, tag_name: str, input_schema_ref: str) -> Dict[str, Any]:
+    """Generates the update (PUT) endpoint."""
+    responses = _create_standard_responses(model_name, f"#/components/schemas/{model_name}")
+
+    return {
+        "tags": [tag_name],
+        "summary": f"Update a {model_name}",
+        "operationId": f"update{model_name}",
+        "requestBody": {
+            "description": f"{model_name} object to update.",
+            "required": True,
+            "content": {
+                "application/json": {"schema": {"$ref": input_schema_ref}},
+                "application/x-www-form-urlencoded": {"schema": {"$ref": input_schema_ref}},
+                "multipart/form-data": {"schema": {"$ref": input_schema_ref}},
+            },
+        },
+        "responses": responses["update"],
+    }
+
+
+def _generate_patch_endpoint(model_name: str, tag_name: str, patch_schema_ref: str) -> Dict[str, Any]:
+    """Generates the partial update (PATCH) endpoint."""
+    responses = _create_standard_responses(model_name, f"#/components/schemas/{model_name}")
+
+    return {
+        "tags": [tag_name],
+        "summary": f"Partially update a {model_name}",
+        "operationId": f"partialUpdate{model_name}",
+        "requestBody": {
+            "description": f"Fields to partially update for a {model_name}. All fields are optional.",
+            "required": True,
+            "content": {
+                "application/json": {"schema": {"$ref": patch_schema_ref}}
+            },
+        },
+        "responses": responses["update"],
+    }
+
+
+def _generate_delete_endpoint(model_name: str, tag_name: str) -> Dict[str, Any]:
+    """Generates the delete (DELETE) endpoint."""
+    responses = _create_standard_responses(model_name, "")
+
+    return {
+        "tags": [tag_name],
+        "summary": f"Delete a {model_name}",
+        "operationId": f"delete{model_name}",
+        "responses": responses["delete"],
+    }
+
+
+def generate_paths_for_table(table: TableInfo, config: Dict[str, Any]) -> Dict[str, Any]:
+    """Generates OpenAPI Path Item Objects for CRUD operations for a table."""
+    paths = {}
+
+    try:
+        table_name_plural = p.plural(table.name)
+    except Exception:
+        table_name_plural = f"{table.name}s"
+
+    model_name = table.model_name
+    pk_field_info = next((f for f in table.fields if f["is_pk"]), None)
+
+    if table.is_m2m_through_table:
+        logger.debug(f"Skipping path generation for M2M through table {table.name}")
+        return {}
+
+    if not pk_field_info:
+        logger.warning(
+            f"Table {table.name} has no primary key field identified in 'fields'. Skipping CRUD path generation."
+        )
+        return {}
+
+    pk_schema = pk_field_info.get("openapi_schema", {"type": "integer"})
+    tag_name = model_name
+    schema_ref = f"#/components/schemas/{model_name}"
+    input_schema_ref = f"#/components/schemas/{model_name}Input"
+    patch_schema_ref = f"#/components/schemas/{model_name}PatchInput"
+
+    # List and Create Path
+    list_create_path = f"/{table_name_plural}"
+    paths[list_create_path] = {
+        "get": _generate_list_endpoint(table, model_name, table_name_plural, tag_name, schema_ref),
+        "post": _generate_create_endpoint(model_name, tag_name, input_schema_ref),
+    }
+
+    # Detail Path
     detail_path = f"/{table_name_plural}/{{id}}"
     paths[detail_path] = {
-        # Common path parameter
-        "parameters": [
-            {
-                "name": "id",
-                "in": "path",
-                "required": True,
-                "description": f"The primary key of the {model_name}.",
-                "schema": pk_schema,  # Use the specific schema determined for the PK
-            }
-        ],
-        # --- GET (Retrieve) ---
-        "get": {
-            "tags": [tag_name],
-            "summary": f"Retrieve a specific {model_name}",
-            "operationId": f"retrieve{model_name}",
-            "responses": {
-                "200": {
-                    "description": f"Details of {model_name}.",
-                    "content": {"application/json": {"schema": {"$ref": schema_ref}}},
-                },
-                "404": {"$ref": "#/components/responses/NotFound"},
-                "default": {"$ref": "#/components/responses/Error"},
-            },
-        },
-        # --- PUT (Update) ---
-        "put": {
-            "tags": [tag_name],
-            "summary": f"Update a {model_name}",
-            "operationId": f"update{model_name}",
-            "requestBody": {
-                "description": f"{model_name} object to update.",
-                "required": True,
-                "content": {
-                    "application/json": {"schema": {"$ref": input_schema_ref}},
-                    "application/x-www-form-urlencoded": {
-                        "schema": {"$ref": input_schema_ref}
-                    },
-                    "multipart/form-data": {"schema": {"$ref": input_schema_ref}},
-                },
-            },
-            "responses": {
-                "200": {
-                    "description": f"{model_name} updated successfully.",
-                    "content": {"application/json": {"schema": {"$ref": schema_ref}}},
-                },
-                "400": {"$ref": "#/components/responses/InvalidInput"},
-                "404": {"$ref": "#/components/responses/NotFound"},
-                "default": {"$ref": "#/components/responses/Error"},
-            },
-        },
-        # --- PATCH (Partial Update) ---
-        "patch": {
-            "tags": [tag_name],
-            "summary": f"Partially update a {model_name}",
-            "operationId": f"partialUpdate{model_name}",
-            "requestBody": {
-                "description": f"Fields to partially update for a {model_name}. All fields are optional.",
-                "required": True,  # Body required, but fields inside are optional
-                "content": {
-                    # Use a specific schema for PATCH where fields are not required
-                    "application/json": {"schema": {"$ref": patch_schema_ref}}
-                },
-            },
-            "responses": {
-                "200": {
-                    "description": f"{model_name} partially updated successfully.",
-                    "content": {"application/json": {"schema": {"$ref": schema_ref}}},
-                },
-                "400": {"$ref": "#/components/responses/InvalidInput"},
-                "404": {"$ref": "#/components/responses/NotFound"},
-                "default": {"$ref": "#/components/responses/Error"},
-            },
-        },
-        # --- DELETE ---
-        "delete": {
-            "tags": [tag_name],
-            "summary": f"Delete a {model_name}",
-            "operationId": f"delete{model_name}",
-            "responses": {
-                "204": {
-                    "description": f"{model_name} deleted successfully."
-                },  # No content
-                "404": {"$ref": "#/components/responses/NotFound"},
-                "default": {"$ref": "#/components/responses/Error"},
-            },
-        },
+        "parameters": [_create_path_parameter("id", f"The primary key of the {model_name}.", pk_schema)],
+        "get": _generate_detail_endpoint(model_name, tag_name, schema_ref),
+        "put": _generate_update_endpoint(model_name, tag_name, input_schema_ref),
+        "patch": _generate_patch_endpoint(model_name, tag_name, patch_schema_ref),
+        "delete": _generate_delete_endpoint(model_name, tag_name),
     }
 
-    # TODO: Add nested paths if relation_style is 'nested' based on RelationshipInfo
+    # Add constraint-based endpoints if enabled
+    if config.get("enable_constraint_endpoints", False):
+        constraint_paths = generate_endpoints_on_table_indexes_and_constraints(table, config)
+        paths.update(constraint_paths)
 
-    # Add index and constraint-based endpoints for efficient lookups
-    constraint_paths = generate_endpoints_on_table_indexes_and_constraints(table, config)
-    paths.update(constraint_paths)
-
-    # Generate M2M endpoints if needed
-    m2m_paths = generate_m2m_endpoints(table, config)
-    paths.update(m2m_paths)
+    # Add M2M endpoints if enabled
+    if config.get("enable_m2m_endpoints", False):
+        m2m_paths = generate_m2m_endpoints(table, config)
+        paths.update(m2m_paths)
 
     return paths
 
@@ -943,6 +965,11 @@ def generate_openapi_spec(
 ) -> Dict[str, Any]:
     """Generates the complete OpenAPI specification dictionary."""
     logger.info("Generating OpenAPI specification...")
+
+    if not ir_list:
+        logger.warning("No tables provided for OpenAPI spec generation")
+        return {}
+
     schemas = {}
     all_paths = {}
     all_tags = set()
@@ -956,8 +983,20 @@ def generate_openapi_spec(
                     "type": "string",
                     "description": "A human-readable error message.",
                 },
-                # Optionally add 'code', 'errors' (for validation field errors)
-                # 'errors': { 'type': 'object', 'additionalProperties': {'type': 'array', 'items': {'type': 'string'}}}
+                "code": {
+                    "type": "string",
+                    "description": "Machine-readable error code.",
+                    "nullable": True
+                },
+                "errors": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "array",
+                        "items": {"type": "string"}
+                    },
+                    "description": "Field-specific validation errors.",
+                    "nullable": True
+                }
             },
             "required": ["detail"],
         }
@@ -1007,25 +1046,30 @@ def generate_openapi_spec(
 
     # Generate schemas and paths for each table
     for table in ir_list:
-        model_name = table.model_name
-        all_tags.add(model_name)  # Add model name as a tag
+        try:
+            model_name = table.model_name
+            all_tags.add(model_name)  # Add model name as a tag
 
-        # Generate main output schema
-        schema_obj = generate_openapi_schema_object(table, config)
-        schemas[model_name] = schema_obj
+            # Generate main output schema
+            schema_obj = generate_openapi_schema_object(table, config)
+            schemas[model_name] = schema_obj
 
-        # Generate input schema (for POST/PUT)
-        input_schema_obj = generate_openapi_input_schema(table, config)
-        schemas[f"{model_name}Input"] = input_schema_obj
+            # Generate input schema (for POST/PUT)
+            input_schema_obj = generate_openapi_input_schema(table, config)
+            schemas[f"{model_name}Input"] = input_schema_obj
 
-        # Generate PATCH input schema (all fields optional)
-        patch_schema_obj = input_schema_obj.copy()  # Start from Input schema
-        patch_schema_obj.pop("required", None)  # Remove 'required' list for PATCH
-        schemas[f"{model_name}PatchInput"] = patch_schema_obj
+            # Generate PATCH input schema (all fields optional)
+            patch_schema_obj = input_schema_obj.copy()  # Start from Input schema
+            patch_schema_obj.pop("required", None)  # Remove 'required' list for PATCH
+            schemas[f"{model_name}PatchInput"] = patch_schema_obj
 
-        # Generate paths for the table
-        table_paths = generate_paths_for_table(table, config)
-        all_paths.update(table_paths)
+            # Generate paths for the table
+            table_paths = generate_paths_for_table(table, config)
+            all_paths.update(table_paths)
+
+        except Exception as e:
+            logger.error(f"Error generating OpenAPI spec for table {table.name}: {e}")
+            continue
 
     # Assemble the complete spec
     spec = {
@@ -1051,14 +1095,31 @@ def generate_openapi_spec(
                 **error_schema_detail,
             },  # Combine model schemas and error schema
             "responses": common_responses,
-            # TODO: Add securitySchemes if implementing auth (e.g., bearer token, basic auth)
-            # 'securitySchemes': {
-            #     'ApiKeyAuth': {'type': 'apiKey', 'in': 'header', 'name': 'Authorization'},
-            #     'BasicAuth': {'type': 'http', 'scheme': 'basic'},
-            # }
+            # Security schemes for authentication
+            "securitySchemes": {
+                "ApiKeyAuth": {
+                    "type": "apiKey",
+                    "in": "header",
+                    "name": "Authorization",
+                    "description": "API key authentication"
+                },
+                "BasicAuth": {
+                    "type": "http",
+                    "scheme": "basic",
+                    "description": "Basic HTTP authentication"
+                },
+                "BearerAuth": {
+                    "type": "http",
+                    "scheme": "bearer",
+                    "bearerFormat": "JWT",
+                    "description": "JWT Bearer token authentication"
+                }
+            } if config.get("enable_authentication", False) else {}
         },
-        # TODO: Add global security requirement if applicable
-        # 'security': [ {'ApiKeyAuth': []} ]
+        # Global security requirements
+        "security": [
+            {config.get("auth_scheme", "BearerAuth"): []}
+        ] if config.get("enable_authentication", False) else []
     }
     logger.info("OpenAPI specification dictionary generated.")
     return spec
