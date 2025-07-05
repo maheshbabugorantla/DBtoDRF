@@ -192,85 +192,76 @@ OPENAPI_TYPE_MAP = {
 # --- Mapping Functions ---
 
 
-def map_db_type_to_django(col: ColumnInfo) -> Tuple[str, Dict[str, Any]]:
+def map_db_type_to_django(col: ColumnInfo, table_info: TableInfo = None) -> Tuple[str, Dict[str, Any]]:
     """Maps DB type string (from Django introspection) to Django model field type and options."""
-    db_type = col.db_type_string  # This is the key for mapping
+
+    # 1. Get the base Django field type from mapping
+    field_type = DJANGO_FIELD_MAP.get(col.db_type_string, "TextField")
+
+    # 2. Base Options from ColumnInfo attributes
     options: Dict[str, Any] = {}
 
-    # 1. Find Direct Match in Map
-    field_type = DJANGO_FIELD_MAP.get(db_type, None)
+    # Basic nullability & unique
+    if col.nullable:
+        options["null"] = True
+    if col.is_unique and not col.is_pk:  # PKs are implicitly unique
+        options["unique"] = True
 
-    # 2. Fallback Logic (if no direct match) - Inspired by inspectdb
-    if field_type is None:
-        logger.warning(
-            f"Unknown DB type '{db_type}' for column '{col.name}'. Attempting fallback mapping."
-        )
-        db_type_lower = db_type.lower() if db_type else ""
-        if "text" in db_type_lower:
-            field_type = "TextField"
-        elif (
-            "char" in db_type_lower
-            or "string" in db_type_lower
-            or "varchar" in db_type_lower
-        ):
-            field_type = "CharField"
-        elif "int" in db_type_lower:
-            field_type = "IntegerField"  # Needs refinement for small/big int
-        elif "bool" in db_type_lower:
-            field_type = "BooleanField"
-        elif "date" in db_type_lower and "time" not in db_type_lower:
-            field_type = "DateField"
-        elif "time" in db_type_lower and "date" in db_type_lower:
-            field_type = "DateTimeField"  # Timestamp/Datetime
-        elif "time" in db_type_lower:
-            field_type = "TimeField"
-        elif (
-            "float" in db_type_lower
-            or "double" in db_type_lower
-            or "real" in db_type_lower
-        ):
-            field_type = "FloatField"
-        elif "decimal" in db_type_lower or "numeric" in db_type_lower:
-            field_type = "DecimalField"
-        elif "uuid" in db_type_lower:
-            field_type = "UUIDField"
-        elif "json" in db_type_lower:
-            field_type = "JSONField"
-        elif "binary" in db_type_lower or "blob" in db_type_lower:
-            field_type = "BinaryField"
-        elif "duration" in db_type_lower:
-            field_type = "DurationField"
-        # Add more backend-specific fallbacks as needed
-        else:  # Ultimate fallback
-            logger.error(
-                f"Could not map DB type '{db_type}' for column '{col.name}'. Defaulting to TextField."
-            )
-            field_type = "TextField"
+    # Size-related options for specific types
+    if field_type in ("CharField", "TextField") and col.internal_size:
+        # Note: If internal_size is -1 or very large, maybe skip max_length
+        if col.internal_size > 0:
+            options["max_length"] = col.internal_size
+    elif field_type == "DecimalField":
+        options["max_digits"] = col.precision or 10  # Default fallback
+        options["decimal_places"] = col.scale or 0
 
     # 3. Refine Field Type and Options based on ColumnInfo
     if col.is_pk:
-        # Check if it looks like an auto-incrementing integer PK
-        is_standard_int_pk = field_type in (
-            "IntegerField",
-            "BigIntegerField",
-            "SmallIntegerField",
-        )
-        # `inspectdb` has complex logic checking sequences/defaults. We simplify:
-        # Assume integer PKs are auto-incrementing unless specified otherwise.
-        if is_standard_int_pk:
-            if "Big" in field_type:
-                field_type = "BigAutoField"
-            elif "Small" in field_type:
-                field_type = "SmallAutoField"
-            else:
-                field_type = "AutoField"
-            options.pop(
-                "primary_key", None
-            )  # AutoFields have implicit primary_key=True
-        else:  # Non-integer PK (e.g., UUID, CharField)
-            options["primary_key"] = True
-            # Ensure default is not set for non-auto PKs if introspection didn't provide one
-            options.pop("default", None)
+        # Check if this table has a composite primary key
+        is_composite_pk = table_info and len(table_info.primary_key_columns) > 1
+
+        if is_composite_pk:
+            # For composite primary keys, individual fields should NOT be AutoField
+            # The composite constraint will be handled by unique_together or CompositePrimaryKey
+            # Keep the original field type (IntegerField, DateTimeField, etc.)
+
+            # If Django introspection already converted this to AutoField, we need to convert it back
+            if field_type in ("AutoField", "BigAutoField", "SmallAutoField"):
+                if field_type == "BigAutoField":
+                    field_type = "BigIntegerField"
+                elif field_type == "SmallAutoField":
+                    field_type = "SmallIntegerField"
+                else:  # AutoField
+                    field_type = "IntegerField"
+                logger.debug(f"Column {col.name} is part of composite PK, converting {col.db_type_string} from AutoField back to {field_type}")
+
+            options.pop("primary_key", None)  # Don't mark individual fields as primary_key=True
+            logger.debug(f"Column {col.name} is part of composite PK, keeping type: {field_type}")
+            # Do NOT convert to AutoField for composite primary keys
+        else:
+            # Single primary key - check if it looks like an auto-incrementing integer PK
+            is_standard_int_pk = field_type in (
+                "IntegerField",
+                "BigIntegerField",
+                "SmallIntegerField",
+            )
+            # `inspectdb` has complex logic checking sequences/defaults. We simplify:
+            # Assume integer PKs are auto-incrementing unless specified otherwise.
+            if is_standard_int_pk:
+                if "Big" in field_type:
+                    field_type = "BigAutoField"
+                elif "Small" in field_type:
+                    field_type = "SmallAutoField"
+                else:
+                    field_type = "AutoField"
+                options.pop(
+                    "primary_key", None
+                )  # AutoFields have implicit primary_key=True
+            else:  # Non-integer PK (e.g., UUID, CharField)
+                options["primary_key"] = True
+                # Ensure default is not set for non-auto PKs if introspection didn't provide one
+                options.pop("default", None)
     else:  # Not a PK
         options.pop("primary_key", None)
 
@@ -293,52 +284,21 @@ def map_db_type_to_django(col: ColumnInfo) -> Tuple[str, Dict[str, Any]]:
     ):  # Set blank=False if not nullable (bool handles null differently)
         options["blank"] = False
 
-    # Handle Unique constraints (single column)
-    if col.is_unique and not col.is_pk and not col.is_foreign_key:
-        options["unique"] = True
+    # Handle defaults (introspection often doesn't retrieve them properly)
+    if col.default is not None:  # Only set if explicitly provided
+        # Maybe parse string defaults like 'uuid4()' into UUID field defaults
+        if field_type == "UUIDField" and str(col.default).lower() in [
+            "uuid4()",
+            "gen_random_uuid()",
+        ]:
+            options["default"] = "uuid.uuid4"  # String to be parsed later
+        else:
+            options["default"] = col.default
 
-    # Handle Max Length for CharField
-    if field_type == "CharField":
-        if "max_length" not in options:  # Only set if not already inferred
-            options["max_length"] = (
-                col.internal_size
-                if col.internal_size and col.internal_size > 0
-                else 255
-            )  # Default fallback
-
-    # Handle Decimal Precision/Scale
-    if field_type == "DecimalField":
-        if "max_digits" not in options:
-            options["max_digits"] = col.precision if col.precision else 10
-        if "decimal_places" not in options:
-            options["decimal_places"] = col.scale if col.scale else 2
-
-    # Default Value (Very basic - assumes default string is directly usable)
-    # This needs significant improvement based on field type and default format.
-    # if col.default is not None and not col.is_pk and 'default' not in options:
-    #    options['default'] = col.default # Store as string, template needs to handle quoting/casting
-
-    # Use db_column if cleaned Python name differs from original DB column name
-    cleaned_name = clean_field_name(col.name)
-
-    # Only add db_column if the names differ *after* lowercasing,
-    # OR if the cleaned name is different but the lowercased versions are the same
-    # (meaning cleaning did more than just change case, e.g. adding underscore for keywords)
-
-    if cleaned_name.lower() != col.name.lower():
-        options["db_column"] = col.name
-        logger.debug(
-            f"Adding db_column='{col.name}' for field '{cleaned_name}' because names differ significantly."
-        )
-
-    elif cleaned_name != col.name:
-        # Case differs, but lower versions match. Django might handle this.
-        # Decide whether to add db_column for explicitness or omit for brevity.
-        # Let's OMIT it for less noise, relying on Django's default mapping for simple case changes.
-        logger.debug(
-            f"Omitting db_column for field '{cleaned_name}' (original: '{col.name}') as only case differs."
-        )
-        pass  # Do not add db_column just for case difference
+    # Handle Foreign Key info (if available) - useful for correct field type
+    if col.is_foreign_key and col.foreign_key_to:
+        target_table, target_column = col.foreign_key_to
+        options["related_to"] = (target_table, target_column)
 
     # Add collation if available (requires Django 4.1+)
     # Add collation if available (requires Django 4.1+)
@@ -357,17 +317,29 @@ def map_db_type_to_django(col: ColumnInfo) -> Tuple[str, Dict[str, Any]]:
 
 def map_db_type_to_openapi(col: ColumnInfo) -> Dict[str, Any]:
     """Maps DB type string (or derived Django field type) to OpenAPI schema properties."""
-    # First, determine the corresponding Django field type
-    django_field_type, _ = map_db_type_to_django(col)
+
+    # Instead of calling map_db_type_to_django with table_info=None (which is fragile),
+    # we'll determine the Django field type locally with simpler logic for OpenAPI purposes
+    field_type = DJANGO_FIELD_MAP.get(col.db_type_string, "TextField")
+
+    # For OpenAPI purposes, we treat all primary key integer fields as AutoField
+    # since we don't have table context to determine if it's composite
+    if col.is_pk and field_type in ("IntegerField", "BigIntegerField", "SmallIntegerField"):
+        if "Big" in field_type:
+            field_type = "BigAutoField"
+        elif "Small" in field_type:
+            field_type = "SmallAutoField"
+        else:
+            field_type = "AutoField"
 
     # Get the base schema from the OpenAPI map
-    schema = OPENAPI_TYPE_MAP.get(django_field_type, OPENAPI_TYPE_MAP["Unknown"]).copy()
+    schema = OPENAPI_TYPE_MAP.get(field_type, OPENAPI_TYPE_MAP["Unknown"]).copy()
 
     # Apply constraints/details from ColumnInfo to the schema
     schema["nullable"] = col.nullable
 
     # Add maxLength if applicable and available
-    if django_field_type == "CharField" and col.internal_size and col.internal_size > 0:
+    if field_type in ("CharField", "TextField") and col.internal_size and col.internal_size > 0:
         schema["maxLength"] = col.internal_size
 
     # Ensure readOnly is set for PKs if not already handled by type map
@@ -376,12 +348,9 @@ def map_db_type_to_openapi(col: ColumnInfo) -> Dict[str, Any]:
         if "description" not in schema:
             schema["description"] = "Primary Key"
 
-    # Informational: Add default if available (handle potential type issues)
-    # if col.default is not None and not col.is_pk: schema['default'] = col.default # Represent as string
-
     # Add description for clarity if missing
     if "description" not in schema and schema["type"] != "Unknown":
-        schema["description"] = f"{django_field_type} field"
+        schema["description"] = f"{field_type} field"
 
     return schema
 
@@ -806,7 +775,7 @@ def build_intermediate_representation(schema_infos: List[TableInfo]) -> List[Tab
         )
         django_fields = []
         for col in table_info.columns:
-            django_field_type, django_options = map_db_type_to_django(col)
+            django_field_type, django_options = map_db_type_to_django(col, table_info)
             field_name = clean_field_name(col.name)
             django_fields.append(
                 {
