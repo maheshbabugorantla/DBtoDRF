@@ -20,7 +20,42 @@ from typing import Dict, List, Any, Optional
 from urllib.parse import urlparse
 from collections import defaultdict
 
+from drf_auto_generator.ast_codegen.base import add_location
 from drf_auto_generator.codegen_utils import format_python_code_using_black
+
+
+# Helper functions for AST node location info
+def _create_name(id_val, ctx=None):
+    """Create a Name node with location info"""
+    node = ast.Name(id=id_val, ctx=ctx or ast.Load())
+    return add_location(node)
+
+def _create_arg(arg_name, annotation=None):
+    """Create an arg node with location info"""
+    node = ast.arg(arg=arg_name, annotation=annotation)
+    return add_location(node)
+
+def _create_function_def(name, args, body, decorator_list=None, returns=None):
+    """Create a FunctionDef node with location info"""
+    func_def = ast.FunctionDef(
+        name=name,
+        args=add_location(args),
+        body=body,
+        decorator_list=decorator_list or [],
+        returns=returns
+    )
+    return add_location(func_def)
+
+def _create_class_def(name, bases, body, decorator_list=None):
+    """Create a ClassDef node with location info"""
+    class_def = ast.ClassDef(
+        name=name,
+        bases=bases or [],
+        keywords=[],
+        body=body,
+        decorator_list=decorator_list or []
+    )
+    return add_location(class_def)
 
 
 class OpenAPISpecHandler:
@@ -459,269 +494,118 @@ class TestCaseGenerator:
         """
         self.endpoint_analyzer = endpoint_analyzer
         self.schema_analyzer = schema_analyzer
-        self.api_base = api_base
+        self.api_base = api_base.rstrip('/')
 
     def _create_import_statements(self) -> List[ast.stmt]:
         """Create import statements for the test file."""
         imports = [
-            # Import Django test classes
-            ast.ImportFrom(
-                module='django.test',
-                names=[
-                    ast.alias(name='TestCase', asname=None),
-                ],
-                level=0
-            ),
-            # Import status codes
-            ast.ImportFrom(
-                module='rest_framework',
-                names=[
-                    ast.alias(name='status', asname=None),
-                ],
-                level=0
-            ),
-            # Import json
-            ast.Import(
-                names=[
-                    ast.alias(name='json', asname=None),
-                ]
-            ),
-            # Import reverse
-            ast.ImportFrom(
+            add_location(ast.Import(names=[
+                add_location(ast.alias(name='json', lineno=1, col_offset=0))
+            ])),
+            add_location(ast.ImportFrom(
                 module='django.urls',
                 names=[
-                    ast.alias(name='reverse', asname=None),
+                    add_location(ast.alias(name='reverse', lineno=1, col_offset=0))
                 ],
-                level=0
-            ),
-            # Import User model for authentication
-            ast.ImportFrom(
-                module='django.contrib.auth',
+                level=0,
+                lineno=1, col_offset=0
+            )),
+            add_location(ast.ImportFrom(
+                module='rest_framework',
                 names=[
-                    ast.alias(name='get_user_model', asname=None),
+                    add_location(ast.alias(name='status', lineno=1, col_offset=0))
                 ],
-                level=0
-            ),
-            # Import Token for token authentication
-            ast.ImportFrom(
-                module='rest_framework.authtoken.models',
+                level=0,
+                lineno=1, col_offset=0
+            )),
+            add_location(ast.ImportFrom(
+                module='rest_framework.test',
                 names=[
-                    ast.alias(name='Token', asname=None),
+                    add_location(ast.alias(name='APITestCase', lineno=1, col_offset=0))
                 ],
-                level=0
-            ),
+                level=0,
+                lineno=1, col_offset=0
+            )),
+            add_location(ast.ImportFrom(
+                module='django.contrib.auth.models',
+                names=[
+                    add_location(ast.alias(name='User', lineno=1, col_offset=0))
+                ],
+                level=0,
+                lineno=1, col_offset=0
+            )),
         ]
+
         return imports
 
     def _create_setup_method(self, resource_name: str) -> ast.FunctionDef:
-        """
-        Create a setUp method for the test class.
+        """Create the setUp method for the test class."""
+        # Create test admin user for authentication
+        create_user_call = add_location(ast.Call(
+            func=_create_name('User.objects.create_superuser'),
+            args=[],
+            keywords=[
+                add_location(ast.keyword(
+                    arg='username',
+                    value=add_location(ast.Constant(value='testadmin', lineno=1, col_offset=0))
+                )),
+                add_location(ast.keyword(
+                    arg='email',
+                    value=add_location(ast.Constant(value='testadmin@example.com', lineno=1, col_offset=0))
+                )),
+                add_location(ast.keyword(
+                    arg='password',
+                    value=add_location(ast.Constant(value='password123', lineno=1, col_offset=0))
+                )),
+            ]
+        ))
 
-        Args:
-            resource_name: Name of the resource being tested
+        # Assign user to self.admin_user
+        user_assign = add_location(ast.Assign(
+            targets=[add_location(ast.Attribute(
+                value=_create_name('self'),
+                attr='admin_user',
+                ctx=ast.Store()
+            ))],
+            value=create_user_call
+        ))
 
-        Returns:
-            An AST FunctionDef node for the setUp method
-        """
-        return ast.FunctionDef(
+        # Login as admin user
+        login_call = add_location(ast.Expr(
+            value=add_location(ast.Call(
+                func=add_location(ast.Attribute(
+                    value=_create_name('self.client'),
+                    attr='login',
+                    ctx=ast.Load()
+                )),
+                args=[],
+                keywords=[
+                    add_location(ast.keyword(
+                        arg='username',
+                        value=add_location(ast.Constant(value='testadmin', lineno=1, col_offset=0))
+                    )),
+                    add_location(ast.keyword(
+                        arg='password',
+                        value=add_location(ast.Constant(value='password123', lineno=1, col_offset=0))
+                    )),
+                ]
+            ))
+        ))
+
+        # Method body
+        body = [user_assign, login_call]
+
+        # Create and return the method
+        return _create_function_def(
             name='setUp',
-            args=ast.arguments(
+            args=add_location(ast.arguments(
                 posonlyargs=[],
-                args=[ast.arg(arg='self', annotation=None)],
+                args=[_create_arg('self')],
                 kwonlyargs=[],
                 kw_defaults=[],
-                defaults=[],
-                vararg=None,
-                kwarg=None
-            ),
-            body=[
-                ast.Expr(
-                    value=ast.Constant(
-                        value=f"Set up test case for {resource_name} API tests with authentication.",
-                        kind=None
-                    )
-                ),
-                ast.Expr(
-                    value=ast.Call(
-                        func=ast.Attribute(
-                            value=ast.Call(
-                                func=ast.Name(id='super', ctx=ast.Load()),
-                                args=[],
-                                keywords=[]
-                            ),
-                            attr='setUp',
-                            ctx=ast.Load()
-                        ),
-                        args=[],
-                        keywords=[]
-                    )
-                ),
-                # Create a test user for authentication
-                ast.Assign(
-                    targets=[
-                        ast.Name(id='User', ctx=ast.Store())
-                    ],
-                    value=ast.Call(
-                        func=ast.Name(id='get_user_model', ctx=ast.Load()),
-                        args=[],
-                        keywords=[]
-                    )
-                ),
-                ast.Assign(
-                    targets=[
-                        ast.Attribute(
-                            value=ast.Name(id='self', ctx=ast.Load()),
-                            attr='username',
-                            ctx=ast.Store()
-                        )
-                    ],
-                    value=ast.Constant(value='testuser', kind=None)
-                ),
-                ast.Assign(
-                    targets=[
-                        ast.Attribute(
-                            value=ast.Name(id='self', ctx=ast.Load()),
-                            attr='email',
-                            ctx=ast.Store()
-                        )
-                    ],
-                    value=ast.Constant(value='testuser@example.com', kind=None)
-                ),
-                ast.Assign(
-                    targets=[
-                        ast.Attribute(
-                            value=ast.Name(id='self', ctx=ast.Load()),
-                            attr='password',
-                            ctx=ast.Store()
-                        )
-                    ],
-                    value=ast.Constant(value='TestPassword123!', kind=None)
-                ),
-                ast.Assign(
-                    targets=[
-                        ast.Attribute(
-                            value=ast.Name(id='self', ctx=ast.Load()),
-                            attr='user',
-                            ctx=ast.Store()
-                        )
-                    ],
-                    value=ast.Call(
-                        func=ast.Attribute(
-                            value=ast.Name(id='User', ctx=ast.Load()),
-                            attr='objects.create_user',
-                            ctx=ast.Load()
-                        ),
-                        args=[],
-                        keywords=[
-                            ast.keyword(
-                                arg='username',
-                                value=ast.Constant(value='testuser', kind=None)
-                            ),
-                            ast.keyword(
-                                arg='email',
-                                value=ast.Constant(value='testuser@example.com', kind=None)
-                            ),
-                            ast.keyword(
-                                arg='password',
-                                value=ast.Constant(value='TestPassword123!', kind=None)
-                            ),
-                        ]
-                    )
-                ),
-                # Create token for this user
-                ast.Assign(
-                    targets=[
-                        ast.Attribute(
-                            value=ast.Name(id='self', ctx=ast.Load()),
-                            attr='token',
-                            ctx=ast.Store()
-                        )
-                    ],
-                    value=ast.Call(
-                        func=ast.Attribute(
-                            value=ast.Name(id='Token', ctx=ast.Load()),
-                            attr='objects.create',
-                            ctx=ast.Load()
-                        ),
-                        args=[],
-                        keywords=[
-                            ast.keyword(
-                                arg='user',
-                                value=ast.Attribute(
-                                    value=ast.Name(id='self', ctx=ast.Load()),
-                                    attr='user',
-                                    ctx=ast.Load()
-                                )
-                            )
-                        ]
-                    )
-                ),
-                # Setup Django API Test Client
-                ast.Assign(
-                    targets=[
-                        ast.Attribute(
-                            value=ast.Name(id='self', ctx=ast.Load()),
-                            attr='client',
-                            ctx=ast.Store()
-                        )
-                    ],
-                    value=ast.Call(
-                        func=ast.Attribute(
-                            value=ast.Name(id='self', ctx=ast.Load()),
-                            attr='client_class',
-                            ctx=ast.Load()
-                        ),
-                        args=[],
-                        keywords=[]
-                    )
-                ),
-                # Setup API Base Path
-                ast.Assign(
-                    targets=[
-                        ast.Attribute(
-                            value=ast.Name(id='self', ctx=ast.Load()),
-                            attr='api_base',
-                            ctx=ast.Store()
-                        )
-                    ],
-                    value=ast.Constant(
-                        value=self.api_base,
-                        kind=None
-                    )
-                ),
-                # Create authentication headers with token
-                ast.Assign(
-                    targets=[
-                        ast.Attribute(
-                            value=ast.Name(id='self', ctx=ast.Load()),
-                            attr='auth_headers',
-                            ctx=ast.Store()
-                        )
-                    ],
-                    value=ast.Dict(
-                        keys=[
-                            ast.Constant(value='Authorization', kind=None),
-                        ],
-                        values=[
-                            ast.BinOp(
-                                left=ast.Constant(value='Token ', kind=None),
-                                op=ast.Add(),
-                                right=ast.Attribute(
-                                    value=ast.Attribute(
-                                        value=ast.Name(id='self', ctx=ast.Load()),
-                                        attr='token',
-                                        ctx=ast.Load()
-                                    ),
-                                    attr='key',
-                                    ctx=ast.Load()
-                                )
-                            ),
-                        ]
-                    )
-                ),
-            ],
-            decorator_list=[],
-            returns=None
+                defaults=[]
+            )),
+            body=body
         )
 
     def _create_teardown_method(self) -> ast.FunctionDef:
@@ -731,58 +615,55 @@ class TestCaseGenerator:
         Returns:
             An AST FunctionDef node for the tearDown method
         """
-        return ast.FunctionDef(
+        return _create_function_def(
             name='tearDown',
-            args=ast.arguments(
+            args=add_location(ast.arguments(
                 posonlyargs=[],
-                args=[ast.arg(arg='self', annotation=None)],
+                args=[_create_arg('self')],
                 kwonlyargs=[],
                 kw_defaults=[],
-                defaults=[],
-                vararg=None,
-                kwarg=None
-            ),
+                defaults=[]
+            )),
             body=[
-                ast.Expr(
-                    value=ast.Constant(
+                add_location(ast.Expr(
+                    value=add_location(ast.Constant(
                         value="Clean up after tests.",
                         kind=None
-                    )
-                ),
+                    ))
+                )),
                 # Cleanup user
-                ast.Expr(
-                    value=ast.Call(
-                        func=ast.Attribute(
-                            value=ast.Attribute(
-                                value=ast.Name(id='self', ctx=ast.Load()),
-                                attr='user',
+                add_location(ast.Expr(
+                    value=add_location(ast.Call(
+                        func=add_location(ast.Attribute(
+                            value=add_location(ast.Attribute(
+                                value=_create_name('self'),
+                                attr='admin_user',
                                 ctx=ast.Load()
-                            ),
+                            )),
                             attr='delete',
                             ctx=ast.Load()
-                        ),
+                        )),
                         args=[],
                         keywords=[]
-                    )
-                ),
-                ast.Expr(
-                    value=ast.Call(
-                        func=ast.Attribute(
-                            value=ast.Call(
-                                func=ast.Name(id='super', ctx=ast.Load()),
-                                args=[],
-                                keywords=[]
-                            ),
-                            attr='tearDown',
+                    ))
+                )),
+                add_location(ast.Expr(
+                    value=add_location(ast.Call(
+                        func=add_location(ast.Attribute(
+                            value=add_location(ast.Attribute(
+                                value=_create_name('super'),
+                                attr='tearDown',
+                                ctx=ast.Load()
+                            )),
+                            attr='__call__',
                             ctx=ast.Load()
-                        ),
+                        )),
                         args=[],
                         keywords=[]
-                    )
-                ),
+                    ))
+                )),
             ],
-            decorator_list=[],
-            returns=None
+            decorator_list=[]
         )
 
     def _add_auth_headers_to_request(self, request_node: ast.Call) -> ast.Call:
@@ -794,14 +675,14 @@ class TestCaseGenerator:
 
         # Add headers parameter
         request_node.keywords.append(
-            ast.keyword(
+            add_location(ast.keyword(
                 arg='headers',
-                value=ast.Attribute(
-                    value=ast.Name(id='self', ctx=ast.Load()),
+                value=add_location(ast.Attribute(
+                    value=add_location(ast.Name(id='self')),
                     attr='auth_headers',
                     ctx=ast.Load()
-                )
-            )
+                ))
+            ))
         )
         return request_node
 
@@ -821,12 +702,10 @@ class TestCaseGenerator:
         # Convert sample data to AST Dict node
         data_node = self._dict_to_ast(sample_data)
 
-        return ast.Assign(
-            targets=[
-                ast.Name(id='data', ctx=ast.Store())
-            ],
+        return add_location(ast.Assign(
+            targets=[add_location(ast.Name(id='data', ctx=ast.Store()))],
             value=data_node
-        )
+        ))
 
     def _dict_to_ast(self, data: Any) -> ast.expr:
         """
@@ -843,15 +722,15 @@ class TestCaseGenerator:
             values = []
 
             for key, value in data.items():
-                keys.append(ast.Constant(value=key, kind=None))
+                keys.append(add_location(ast.Constant(value=key, kind=None)))
                 values.append(self._dict_to_ast(value))
 
-            return ast.Dict(keys=keys, values=values)
+            return add_location(ast.Dict(keys=keys, values=values))
         elif isinstance(data, (list, tuple)):
-            return ast.List(
+            return add_location(ast.List(
                 elts=[self._dict_to_ast(item) for item in data],
                 ctx=ast.Load()
-            )
+            ))
         else:
             return self._value_to_ast(data)
 
@@ -866,9 +745,9 @@ class TestCaseGenerator:
             An AST expression node
         """
         if value is None:
-            return ast.Constant(value=None, kind=None)
+            return add_location(ast.Constant(value=None, kind=None))
         else:
-            return ast.Constant(value=value, kind=None)
+            return add_location(ast.Constant(value=value, kind=None))
 
     def _find_primary_key_param(self, path: str, operation: Dict) -> Optional[str]:
         """
@@ -913,12 +792,12 @@ class TestCaseGenerator:
             An AST FunctionDef node for the test method
         """
         body = [
-            ast.Expr(
-                value=ast.Constant(
+            add_location(ast.Expr(
+                value=add_location(ast.Constant(
                     value=f"Test creating a {resource_name} resource.",
                     kind=None
-                )
-            ),
+                ))
+            )),
         ]
 
         # Add request data
@@ -927,134 +806,124 @@ class TestCaseGenerator:
 
         # Add POST request with authentication
         body.extend([
-            ast.Assign(
-                targets=[
-                    ast.Name(id='url', ctx=ast.Store())
-                ],
-                value=ast.BinOp(
-                    left=ast.Attribute(
-                        value=ast.Name(id='self', ctx=ast.Load()),
+            add_location(ast.Assign(
+                targets=[add_location(ast.Name(id='url', ctx=ast.Store()))],
+                value=add_location(ast.BinOp(
+                    left=add_location(ast.Attribute(
+                        value=add_location(ast.Name(id='self', ctx=ast.Load())),
                         attr='api_base',
                         ctx=ast.Load()
-                    ),
-                    op=ast.Add(),
-                    right=ast.Constant(
+                    )),
+                    op=add_location(ast.Add()),
+                    right=add_location(ast.Constant(
                         value=f"{create_op['path'].split('<')[0]}/",
                         kind=None
-                    )
-                )
-            ),
-            ast.Assign(
-                targets=[
-                    ast.Name(id='response', ctx=ast.Store())
-                ],
-                value=ast.Call(
-                    func=ast.Attribute(
-                        value=ast.Attribute(
-                            value=ast.Name(id='self', ctx=ast.Load()),
+                    ))
+                ))
+            )),
+            add_location(ast.Assign(
+                targets=[add_location(ast.Name(id='response', ctx=ast.Store()))],
+                value=add_location(ast.Call(
+                    func=add_location(ast.Attribute(
+                        value=add_location(ast.Attribute(
+                            value=add_location(ast.Name(id='self', ctx=ast.Load())),
                             attr='client',
                             ctx=ast.Load()
-                        ),
+                        )),
                         attr='post',
                         ctx=ast.Load()
-                    ),
-                    args=[
-                        ast.Name(id='url', ctx=ast.Load()),
-                    ],
+                    )),
+                    args=[add_location(ast.Name(id='url', ctx=ast.Load()))],
                     keywords=[
-                        ast.keyword(
+                        add_location(ast.keyword(
                             arg='data',
-                            value=ast.Name(id='data', ctx=ast.Load())
-                        ),
-                        ast.keyword(
+                            value=add_location(ast.Name(id='data', ctx=ast.Load()))
+                        )),
+                        add_location(ast.keyword(
                             arg='format',
-                            value=ast.Constant(value='json', kind=None)
-                        ),
-                        ast.keyword(
+                            value=add_location(ast.Constant(value='json', kind=None))
+                        )),
+                        add_location(ast.keyword(
                             arg='headers',
-                            value=ast.Attribute(
-                                value=ast.Name(id='self', ctx=ast.Load()),
+                            value=add_location(ast.Attribute(
+                                value=add_location(ast.Name(id='self', ctx=ast.Load())),
                                 attr='auth_headers',
                                 ctx=ast.Load()
-                            )
-                        )
+                            ))
+                        ))
                     ]
-                )
-            ),
-            ast.Expr(
-                value=ast.Call(
-                    func=ast.Attribute(
-                        value=ast.Name(id='self', ctx=ast.Load()),
+                ))
+            )),
+            add_location(ast.Expr(
+                value=add_location(ast.Call(
+                    func=add_location(ast.Attribute(
+                        value=add_location(ast.Name(id='self', ctx=ast.Load())),
                         attr='assertEqual',
                         ctx=ast.Load()
-                    ),
+                    )),
                     args=[
-                        ast.Attribute(
-                            value=ast.Name(id='response', ctx=ast.Load()),
+                        add_location(ast.Attribute(
+                            value=add_location(ast.Name(id='response', ctx=ast.Load())),
                             attr='status_code',
                             ctx=ast.Load()
-                        ),
-                        ast.Attribute(
-                            value=ast.Name(id='status', ctx=ast.Load()),
+                        )),
+                        add_location(ast.Attribute(
+                            value=add_location(ast.Name(id='status', ctx=ast.Load())),
                             attr='HTTP_201_CREATED',
                             ctx=ast.Load()
-                        )
+                        ))
                     ],
                     keywords=[]
-                )
-            ),
-            ast.Assign(
-                targets=[
-                    ast.Name(id='response_data', ctx=ast.Store())
-                ],
-                value=ast.Call(
-                    func=ast.Attribute(
-                        value=ast.Name(id='json', ctx=ast.Load()),
+                ))
+            )),
+            add_location(ast.Assign(
+                targets=[add_location(ast.Name(id='response_data', ctx=ast.Store()))],
+                value=add_location(ast.Call(
+                    func=add_location(ast.Attribute(
+                        value=add_location(ast.Name(id='json', ctx=ast.Load())),
                         attr='loads',
                         ctx=ast.Load()
-                    ),
+                    )),
                     args=[
-                        ast.Attribute(
-                            value=ast.Name(id='response', ctx=ast.Load()),
+                        add_location(ast.Attribute(
+                            value=add_location(ast.Name(id='response', ctx=ast.Load())),
                             attr='content',
                             ctx=ast.Load()
-                        )
+                        ))
                     ],
                     keywords=[]
-                )
-            ),
+                ))
+            )),
         ])
 
         # Find potential primary key fields - check for field named 'id' or 'pk'
         pk_field = 'id'
         body.append(
-            ast.Expr(
-                value=ast.Call(
-                    func=ast.Attribute(
-                        value=ast.Name(id='self', ctx=ast.Load()),
+            add_location(ast.Expr(
+                value=add_location(ast.Call(
+                    func=add_location(ast.Attribute(
+                        value=add_location(ast.Name(id='self', ctx=ast.Load())),
                         attr='assertIn',
                         ctx=ast.Load()
-                    ),
+                    )),
                     args=[
-                        ast.Constant(value=pk_field, kind=None),
-                        ast.Name(id='response_data', ctx=ast.Load())
+                        add_location(ast.Constant(value=pk_field, kind=None)),
+                        add_location(ast.Name(id='response_data', ctx=ast.Load()))
                     ],
                     keywords=[]
-                )
-            )
+                ))
+            ))
         )
 
         body.append(
-            ast.Assign(
-                targets=[
-                    ast.Name(id='resource_id', ctx=ast.Store())
-                ],
-                value=ast.Subscript(
-                    value=ast.Name(id='response_data', ctx=ast.Load()),
-                    slice=ast.Constant(value=pk_field, kind=None),
+            add_location(ast.Assign(
+                targets=[add_location(ast.Name(id='resource_id', ctx=ast.Store()))],
+                value=add_location(ast.Subscript(
+                    value=add_location(ast.Name(id='response_data', ctx=ast.Load())),
+                    slice=add_location(ast.Constant(value=pk_field, kind=None)),
                     ctx=ast.Load()
-                )
-            )
+                ))
+            ))
         )
 
         # If retrieve operation is available, add verification with authentication
@@ -1065,128 +934,118 @@ class TestCaseGenerator:
                 pk_param = 'id'  # Default if not found
 
             body.extend([
-                ast.Expr(
-                    value=ast.Constant(
+                add_location(ast.Expr(
+                    value=add_location(ast.Constant(
                         value=f"Verify the {resource_name} was created correctly",
                         kind=None
-                    )
-                ),
-                ast.Assign(
-                    targets=[
-                        ast.Name(id='detail_url', ctx=ast.Store())
-                    ],
-                    value=ast.BinOp(
-                        left=ast.Attribute(
-                            value=ast.Name(id='self', ctx=ast.Load()),
+                    ))
+                )),
+                add_location(ast.Assign(
+                    targets=[add_location(ast.Name(id='detail_url', ctx=ast.Store()))],
+                    value=add_location(ast.BinOp(
+                        left=add_location(ast.Attribute(
+                            value=add_location(ast.Name(id='self', ctx=ast.Load())),
                             attr='api_base',
                             ctx=ast.Load()
-                        ),
-                        op=ast.Add(),
-                        right=ast.Call(
-                            func=ast.Attribute(
-                                value=ast.Constant(
+                        )),
+                        op=add_location(ast.Add()),
+                        right=add_location(ast.Call(
+                            func=add_location(ast.Attribute(
+                                value=add_location(ast.Constant(
                                     value=f"{retrieve_op['path'].replace(f'<{pk_param}>', '{}')}/",
                                     kind=None
-                                ),
+                                )),
                                 attr='format',
                                 ctx=ast.Load()
-                            ),
-                            args=[
-                                ast.Name(id='resource_id', ctx=ast.Load())
-                            ],
+                            )),
+                            args=[add_location(ast.Name(id='resource_id', ctx=ast.Load()))],
                             keywords=[]
-                        )
-                    )
-                ),
-                ast.Assign(
-                    targets=[
-                        ast.Name(id='get_response', ctx=ast.Store())
-                    ],
-                    value=ast.Call(
-                        func=ast.Attribute(
-                            value=ast.Attribute(
-                                value=ast.Name(id='self', ctx=ast.Load()),
+                        ))
+                    ))
+                )),
+                add_location(ast.Assign(
+                    targets=[add_location(ast.Name(id='get_response', ctx=ast.Store()))],
+                    value=add_location(ast.Call(
+                        func=add_location(ast.Attribute(
+                            value=add_location(ast.Attribute(
+                                value=add_location(ast.Name(id='self', ctx=ast.Load())),
                                 attr='client',
                                 ctx=ast.Load()
-                            ),
+                            )),
                             attr='get',
                             ctx=ast.Load()
-                        ),
-                        args=[
-                            ast.Name(id='detail_url', ctx=ast.Load())
-                        ],
+                        )),
+                        args=[add_location(ast.Name(id='detail_url', ctx=ast.Load()))],
                         keywords=[
-                            ast.keyword(
+                            add_location(ast.keyword(
                                 arg='headers',
-                                value=ast.Attribute(
-                                    value=ast.Name(id='self', ctx=ast.Load()),
+                                value=add_location(ast.Attribute(
+                                    value=add_location(ast.Name(id='self', ctx=ast.Load())),
                                     attr='auth_headers',
                                     ctx=ast.Load()
-                                )
-                            )
+                                ))
+                            ))
                         ]
-                    )
-                ),
-                ast.Expr(
-                    value=ast.Call(
-                        func=ast.Attribute(
-                            value=ast.Name(id='self', ctx=ast.Load()),
+                    ))
+                )),
+                add_location(ast.Expr(
+                    value=add_location(ast.Call(
+                        func=add_location(ast.Attribute(
+                            value=add_location(ast.Name(id='self', ctx=ast.Load())),
                             attr='assertEqual',
                             ctx=ast.Load()
-                        ),
+                        )),
                         args=[
-                            ast.Attribute(
-                                value=ast.Name(id='get_response', ctx=ast.Load()),
+                            add_location(ast.Attribute(
+                                value=add_location(ast.Name(id='get_response', ctx=ast.Load())),
                                 attr='status_code',
                                 ctx=ast.Load()
-                            ),
-                            ast.Attribute(
-                                value=ast.Name(id='status', ctx=ast.Load()),
+                            )),
+                            add_location(ast.Attribute(
+                                value=add_location(ast.Name(id='status', ctx=ast.Load())),
                                 attr='HTTP_200_OK',
                                 ctx=ast.Load()
-                            )
+                            ))
                         ],
                         keywords=[]
-                    )
-                ),
-                ast.Assign(
-                    targets=[
-                        ast.Name(id='get_data', ctx=ast.Store())
-                    ],
-                    value=ast.Call(
-                        func=ast.Attribute(
-                            value=ast.Name(id='json', ctx=ast.Load()),
+                    ))
+                )),
+                add_location(ast.Assign(
+                    targets=[add_location(ast.Name(id='get_data', ctx=ast.Store()))],
+                    value=add_location(ast.Call(
+                        func=add_location(ast.Attribute(
+                            value=add_location(ast.Name(id='json', ctx=ast.Load())),
                             attr='loads',
                             ctx=ast.Load()
-                        ),
+                        )),
                         args=[
-                            ast.Attribute(
-                                value=ast.Name(id='get_response', ctx=ast.Load()),
+                            add_location(ast.Attribute(
+                                value=add_location(ast.Name(id='get_response', ctx=ast.Load())),
                                 attr='content',
                                 ctx=ast.Load()
-                            )
+                            ))
                         ],
                         keywords=[]
-                    )
-                ),
-                ast.Expr(
-                    value=ast.Call(
-                        func=ast.Attribute(
-                            value=ast.Name(id='self', ctx=ast.Load()),
+                    ))
+                )),
+                add_location(ast.Expr(
+                    value=add_location(ast.Call(
+                        func=add_location(ast.Attribute(
+                            value=add_location(ast.Name(id='self', ctx=ast.Load())),
                             attr='assertEqual',
                             ctx=ast.Load()
-                        ),
+                        )),
                         args=[
-                            ast.Subscript(
-                                value=ast.Name(id='get_data', ctx=ast.Load()),
-                                slice=ast.Constant(value=pk_field, kind=None),
+                            add_location(ast.Subscript(
+                                value=add_location(ast.Name(id='get_data', ctx=ast.Load())),
+                                slice=add_location(ast.Constant(value=pk_field, kind=None)),
                                 ctx=ast.Load()
-                            ),
-                            ast.Name(id='resource_id', ctx=ast.Load())
+                            )),
+                            add_location(ast.Name(id='resource_id', ctx=ast.Load()))
                         ],
                         keywords=[]
-                    )
-                ),
+                    ))
+                )),
             ])
 
             # Get the input schema to check what fields are provided
@@ -1206,44 +1065,43 @@ class TestCaseGenerator:
                     # Only include fields that were in our request data
                     if key in sample_data:
                         body.append(
-                            ast.Expr(
-                                value=ast.Call(
-                                    func=ast.Attribute(
-                                        value=ast.Name(id='self', ctx=ast.Load()),
+                            add_location(ast.Expr(
+                                value=add_location(ast.Call(
+                                    func=add_location(ast.Attribute(
+                                        value=add_location(ast.Name(id='self', ctx=ast.Load())),
                                         attr='assertEqual',
                                         ctx=ast.Load()
-                                    ),
+                                    )),
                                     args=[
-                                        ast.Subscript(
-                                            value=ast.Name(id='get_data', ctx=ast.Load()),
-                                            slice=ast.Constant(value=key, kind=None),
+                                        add_location(ast.Subscript(
+                                            value=add_location(ast.Name(id='get_data', ctx=ast.Load())),
+                                            slice=add_location(ast.Constant(value=key, kind=None)),
                                             ctx=ast.Load()
-                                        ),
-                                        ast.Subscript(
-                                            value=ast.Name(id='data', ctx=ast.Load()),
-                                            slice=ast.Constant(value=key, kind=None),
+                                        )),
+                                        add_location(ast.Subscript(
+                                            value=add_location(ast.Name(id='data', ctx=ast.Load())),
+                                            slice=add_location(ast.Constant(value=key, kind=None)),
                                             ctx=ast.Load()
-                                        )
+                                        ))
                                     ],
                                     keywords=[]
-                                )
-                            )
+                                ))
+                            ))
                         )
 
-        return ast.FunctionDef(
+        return _create_function_def(
             name=f'test_create_{resource_name}',
-            args=ast.arguments(
+            args=add_location(ast.arguments(
                 posonlyargs=[],
-                args=[ast.arg(arg='self', annotation=None)],
+                args=[_create_arg('self')],
                 kwonlyargs=[],
                 kw_defaults=[],
                 defaults=[],
                 vararg=None,
                 kwarg=None
-            ),
+            )),
             body=body,
-            decorator_list=[],
-            returns=None
+            decorator_list=[]
         )
 
     def _create_test_list_method(self, resource_name: str, list_op: Dict) -> ast.FunctionDef:
@@ -1258,200 +1116,191 @@ class TestCaseGenerator:
             An AST FunctionDef node for the test method
         """
         body = [
-            ast.Expr(
-                value=ast.Constant(
+            add_location(ast.Expr(
+                value=add_location(ast.Constant(
                     value=f"Test listing {resource_name} resources.",
                     kind=None
-                )
-            ),
-            ast.Assign(
-                targets=[
-                    ast.Name(id='url', ctx=ast.Store())
-                ],
-                value=ast.BinOp(
-                    left=ast.Attribute(
-                        value=ast.Name(id='self', ctx=ast.Load()),
+                ))
+            )),
+            add_location(ast.Assign(
+                targets=[add_location(ast.Name(id='url', ctx=ast.Store()))],
+                value=add_location(ast.BinOp(
+                    left=add_location(ast.Attribute(
+                        value=add_location(ast.Name(id='self', ctx=ast.Load())),
                         attr='api_base',
                         ctx=ast.Load()
-                    ),
-                    op=ast.Add(),
-                    right=ast.Constant(
+                    )),
+                    op=add_location(ast.Add()),
+                    right=add_location(ast.Constant(
                         value=f"{list_op['path']}/",
                         kind=None
-                    )
-                )
-            ),
-            ast.Assign(
-                targets=[
-                    ast.Name(id='response', ctx=ast.Store())
-                ],
-                value=ast.Call(
-                    func=ast.Attribute(
-                        value=ast.Attribute(
-                            value=ast.Name(id='self', ctx=ast.Load()),
+                    ))
+                ))
+            )),
+            add_location(ast.Assign(
+                targets=[add_location(ast.Name(id='response', ctx=ast.Store()))],
+                value=add_location(ast.Call(
+                    func=add_location(ast.Attribute(
+                        value=add_location(ast.Attribute(
+                            value=add_location(ast.Name(id='self', ctx=ast.Load())),
                             attr='client',
                             ctx=ast.Load()
-                        ),
+                        )),
                         attr='get',
                         ctx=ast.Load()
-                    ),
-                    args=[
-                        ast.Name(id='url', ctx=ast.Load())
-                    ],
+                    )),
+                    args=[add_location(ast.Name(id='url', ctx=ast.Load()))],
                     keywords=[
-                        ast.keyword(
+                        add_location(ast.keyword(
                             arg='headers',
-                            value=ast.Attribute(
-                                value=ast.Name(id='self', ctx=ast.Load()),
+                            value=add_location(ast.Attribute(
+                                value=add_location(ast.Name(id='self', ctx=ast.Load())),
                                 attr='auth_headers',
                                 ctx=ast.Load()
-                            )
-                        )
+                            ))
+                        ))
                     ]
-                )
-            ),
-            ast.Expr(
-                value=ast.Call(
-                    func=ast.Attribute(
-                        value=ast.Name(id='self', ctx=ast.Load()),
+                ))
+            )),
+            add_location(ast.Expr(
+                value=add_location(ast.Call(
+                    func=add_location(ast.Attribute(
+                        value=add_location(ast.Name(id='self', ctx=ast.Load())),
                         attr='assertEqual',
                         ctx=ast.Load()
-                    ),
+                    )),
                     args=[
-                        ast.Attribute(
-                            value=ast.Name(id='response', ctx=ast.Load()),
+                        add_location(ast.Attribute(
+                            value=add_location(ast.Name(id='response', ctx=ast.Load())),
                             attr='status_code',
                             ctx=ast.Load()
-                        ),
-                        ast.Attribute(
-                            value=ast.Name(id='status', ctx=ast.Load()),
+                        )),
+                        add_location(ast.Attribute(
+                            value=add_location(ast.Name(id='status', ctx=ast.Load())),
                             attr='HTTP_200_OK',
                             ctx=ast.Load()
-                        )
+                        ))
                     ],
                     keywords=[]
-                )
-            ),
-            ast.Assign(
-                targets=[
-                    ast.Name(id='response_data', ctx=ast.Store())
-                ],
-                value=ast.Call(
-                    func=ast.Attribute(
-                        value=ast.Name(id='json', ctx=ast.Load()),
+                ))
+            )),
+            add_location(ast.Assign(
+                targets=[add_location(ast.Name(id='response_data', ctx=ast.Store()))],
+                value=add_location(ast.Call(
+                    func=add_location(ast.Attribute(
+                        value=add_location(ast.Name(id='json', ctx=ast.Load())),
                         attr='loads',
                         ctx=ast.Load()
-                    ),
+                    )),
                     args=[
-                        ast.Attribute(
-                            value=ast.Name(id='response', ctx=ast.Load()),
+                        add_location(ast.Attribute(
+                            value=add_location(ast.Name(id='response', ctx=ast.Load())),
                             attr='content',
                             ctx=ast.Load()
-                        )
+                        ))
                     ],
                     keywords=[]
-                )
-            ),
+                ))
+            )),
         ]
 
         # Check pagination structure if it exists in the API
         body.extend([
-            ast.Try(
+            add_location(ast.Try(
                 body=[
-                    ast.Expr(
-                        value=ast.Call(
-                            func=ast.Attribute(
-                                value=ast.Name(id='self', ctx=ast.Load()),
+                    add_location(ast.Expr(
+                        value=add_location(ast.Call(
+                            func=add_location(ast.Attribute(
+                                value=add_location(ast.Name(id='self', ctx=ast.Load())),
                                 attr='assertIn',
                                 ctx=ast.Load()
-                            ),
+                            )),
                             args=[
-                                ast.Constant(value='results', kind=None),
-                                ast.Name(id='response_data', ctx=ast.Load())
+                                add_location(ast.Constant(value='results', kind=None)),
+                                add_location(ast.Name(id='response_data', ctx=ast.Load()))
                             ],
                             keywords=[]
-                        )
-                    ),
-                    ast.Expr(
-                        value=ast.Call(
-                            func=ast.Attribute(
-                                value=ast.Name(id='self', ctx=ast.Load()),
+                        ))
+                    )),
+                    add_location(ast.Expr(
+                        value=add_location(ast.Call(
+                            func=add_location(ast.Attribute(
+                                value=add_location(ast.Name(id='self', ctx=ast.Load())),
                                 attr='assertIsInstance',
                                 ctx=ast.Load()
-                            ),
+                            )),
                             args=[
-                                ast.Subscript(
-                                    value=ast.Name(id='response_data', ctx=ast.Load()),
-                                    slice=ast.Constant(value='results', kind=None),
+                                add_location(ast.Subscript(
+                                    value=add_location(ast.Name(id='response_data', ctx=ast.Load())),
+                                    slice=add_location(ast.Constant(value='results', kind=None)),
                                     ctx=ast.Load()
-                                ),
-                                ast.Name(id='list', ctx=ast.Load())
+                                )),
+                                add_location(ast.Name(id='list', ctx=ast.Load()))
                             ],
                             keywords=[]
-                        )
-                    ),
+                        ))
+                    )),
                 ],
                 handlers=[
-                    ast.ExceptHandler(
-                        type=ast.Name(id='KeyError', ctx=ast.Load()),
+                    add_location(ast.ExceptHandler(
+                        type=add_location(ast.Name(id='KeyError', ctx=ast.Load())),
                         name=None,
                         body=[
-                            ast.Expr(
-                                value=ast.Call(
-                                    func=ast.Attribute(
-                                        value=ast.Name(id='self', ctx=ast.Load()),
+                            add_location(ast.Expr(
+                                value=add_location(ast.Call(
+                                    func=add_location(ast.Attribute(
+                                        value=add_location(ast.Name(id='self', ctx=ast.Load())),
                                         attr='assertIsInstance',
                                         ctx=ast.Load()
-                                    ),
+                                    )),
                                     args=[
-                                        ast.Name(id='response_data', ctx=ast.Load()),
-                                        ast.Name(id='list', ctx=ast.Load())
+                                        add_location(ast.Name(id='response_data', ctx=ast.Load())),
+                                        add_location(ast.Name(id='list', ctx=ast.Load()))
                                     ],
                                     keywords=[]
-                                )
-                            ),
+                                ))
+                            ))
                         ]
-                    ),
-                    ast.ExceptHandler(
-                        type=ast.Name(id='AssertionError', ctx=ast.Load()),
+                    )),
+                    add_location(ast.ExceptHandler(
+                        type=add_location(ast.Name(id='AssertionError', ctx=ast.Load())),
                         name=None,
                         body=[
-                            ast.Expr(
-                                value=ast.Call(
-                                    func=ast.Attribute(
-                                        value=ast.Name(id='self', ctx=ast.Load()),
+                            add_location(ast.Expr(
+                                value=add_location(ast.Call(
+                                    func=add_location(ast.Attribute(
+                                        value=add_location(ast.Name(id='self', ctx=ast.Load())),
                                         attr='assertIsInstance',
                                         ctx=ast.Load()
-                                    ),
+                                    )),
                                     args=[
-                                        ast.Name(id='response_data', ctx=ast.Load()),
-                                        ast.Name(id='list', ctx=ast.Load())
+                                        add_location(ast.Name(id='response_data', ctx=ast.Load())),
+                                        add_location(ast.Name(id='list', ctx=ast.Load()))
                                     ],
                                     keywords=[]
-                                )
-                            ),
+                                ))
+                            ))
                         ]
-                    ),
+                    )),
                 ],
                 orelse=[],
                 finalbody=[]
-            )
+            ))
         ])
 
-        return ast.FunctionDef(
+        return _create_function_def(
             name=f'test_list_{resource_name}',
-            args=ast.arguments(
+            args=add_location(ast.arguments(
                 posonlyargs=[],
-                args=[ast.arg(arg='self', annotation=None)],
+                args=[_create_arg('self')],
                 kwonlyargs=[],
                 kw_defaults=[],
                 defaults=[],
                 vararg=None,
                 kwarg=None
-            ),
+            )),
             body=body,
-            decorator_list=[],
-            returns=None
+            decorator_list=[]
         )
 
     def _create_test_retrieve_method(self, resource_name: str, retrieve_op: Dict, create_op: Optional[Dict] = None) -> ast.FunctionDef:
@@ -1467,12 +1316,12 @@ class TestCaseGenerator:
             An AST FunctionDef node for the test method
         """
         body = [
-            ast.Expr(
-                value=ast.Constant(
+            add_location(ast.Expr(
+                value=add_location(ast.Constant(
                     value=f"Test retrieving a {resource_name} resource.",
                     kind=None
-                )
-            ),
+                ))
+            )),
         ]
 
         # Find the primary key parameter in the path
@@ -1483,12 +1332,12 @@ class TestCaseGenerator:
         # If create operation is available, create a resource first
         if create_op:
             body.append(
-                ast.Expr(
-                    value=ast.Constant(
+                add_location(ast.Expr(
+                    value=add_location(ast.Constant(
                         value="First, create a resource to retrieve",
                         kind=None
-                    )
-                )
+                    ))
+                ))
             )
 
             # Add request data
@@ -1496,236 +1345,213 @@ class TestCaseGenerator:
 
             # Add create request with authentication
             body.extend([
-                ast.Assign(
-                    targets=[
-                        ast.Name(id='create_url', ctx=ast.Store())
-                    ],
-                    value=ast.BinOp(
-                        left=ast.Attribute(
-                            value=ast.Name(id='self', ctx=ast.Load()),
+                add_location(ast.Assign(
+                    targets=[add_location(ast.Name(id='create_url', ctx=ast.Store()))],
+                    value=add_location(ast.BinOp(
+                        left=add_location(ast.Attribute(
+                            value=add_location(ast.Name(id='self', ctx=ast.Load())),
                             attr='api_base',
                             ctx=ast.Load()
-                        ),
-                        op=ast.Add(),
-                        right=ast.Constant(
+                        )),
+                        op=add_location(ast.Add()),
+                        right=add_location(ast.Constant(
                             value=f"{create_op['path'].split('<')[0]}/",
                             kind=None
-                        )
-                    )
-                ),
-                ast.Assign(
-                    targets=[
-                        ast.Name(id='create_response', ctx=ast.Store())
-                    ],
-                    value=ast.Call(
-                        func=ast.Attribute(
-                            value=ast.Attribute(
-                                value=ast.Name(id='self', ctx=ast.Load()),
+                        ))
+                    ))
+                )),
+                add_location(ast.Assign(
+                    targets=[add_location(ast.Name(id='create_response', ctx=ast.Store()))],
+                    value=add_location(ast.Call(
+                        func=add_location(ast.Attribute(
+                            value=add_location(ast.Attribute(
+                                value=add_location(ast.Name(id='self', ctx=ast.Load())),
                                 attr='client',
                                 ctx=ast.Load()
-                            ),
+                            )),
                             attr='post',
                             ctx=ast.Load()
-                        ),
-                        args=[
-                            ast.Name(id='create_url', ctx=ast.Load()),
-                        ],
+                        )),
+                        args=[add_location(ast.Name(id='create_url', ctx=ast.Load()))],
                         keywords=[
-                            ast.keyword(
+                            add_location(ast.keyword(
                                 arg='data',
-                                value=ast.Name(id='data', ctx=ast.Load())
-                            ),
-                            ast.keyword(
+                                value=add_location(ast.Name(id='data', ctx=ast.Load()))
+                            )),
+                            add_location(ast.keyword(
                                 arg='format',
-                                value=ast.Constant(value='json', kind=None)
-                            ),
-                            ast.keyword(
+                                value=add_location(ast.Constant(value='json', kind=None))
+                            )),
+                            add_location(ast.keyword(
                                 arg='headers',
-                                value=ast.Attribute(
-                                    value=ast.Name(id='self', ctx=ast.Load()),
+                                value=add_location(ast.Attribute(
+                                    value=add_location(ast.Name(id='self', ctx=ast.Load())),
                                     attr='auth_headers',
                                     ctx=ast.Load()
-                                )
-                            )
+                                ))
+                            ))
                         ]
-                    )
-                ),
-                ast.Assign(
-                    targets=[
-                        ast.Name(id='created_data', ctx=ast.Store())
-                    ],
-                    value=ast.Call(
-                        func=ast.Attribute(
-                            value=ast.Name(id='json', ctx=ast.Load()),
+                    ))
+                )),
+                add_location(ast.Assign(
+                    targets=[add_location(ast.Name(id='created_data', ctx=ast.Store()))],
+                    value=add_location(ast.Call(
+                        func=add_location(ast.Attribute(
+                            value=add_location(ast.Name(id='json', ctx=ast.Load())),
                             attr='loads',
                             ctx=ast.Load()
-                        ),
+                        )),
                         args=[
-                            ast.Attribute(
-                                value=ast.Name(id='create_response', ctx=ast.Load()),
+                            add_location(ast.Attribute(
+                                value=add_location(ast.Name(id='create_response', ctx=ast.Load())),
                                 attr='content',
                                 ctx=ast.Load()
-                            )
+                            ))
                         ],
                         keywords=[]
-                    )
-                ),
-                ast.Assign(
-                    targets=[
-                        ast.Name(id='resource_id', ctx=ast.Store())
-                    ],
-                    value=ast.Subscript(
-                        value=ast.Name(id='created_data', ctx=ast.Load()),
-                        slice=ast.Constant(value='id', kind=None),
+                    ))
+                )),
+                add_location(ast.Assign(
+                    targets=[add_location(ast.Name(id='resource_id', ctx=ast.Store()))],
+                    value=add_location(ast.Subscript(
+                        value=add_location(ast.Name(id='created_data', ctx=ast.Load())),
+                        slice=add_location(ast.Constant(value='id', kind=None)),
                         ctx=ast.Load()
-                    )
-                ),
+                    ))
+                )),
             ])
         else:
             # If no create operation, assume resource with ID 1 exists
             body.append(
-                ast.Assign(
-                    targets=[
-                        ast.Name(id='resource_id', ctx=ast.Store())
-                    ],
-                    value=ast.Constant(value=1, kind=None)
-                )
+                add_location(ast.Assign(
+                    targets=[add_location(ast.Name(id='resource_id', ctx=ast.Store()))],
+                    value=add_location(ast.Constant(value=1, kind=None))
+                ))
             )
 
         # Add retrieve request with authentication
         body.extend([
-            ast.Assign(
-                targets=[
-                    ast.Name(id='retrieve_url', ctx=ast.Store())
-                ],
-                value=ast.BinOp(
-                    left=ast.Attribute(
-                        value=ast.Name(id='self', ctx=ast.Load()),
+            add_location(ast.Assign(
+                targets=[add_location(ast.Name(id='retrieve_url', ctx=ast.Store()))],
+                value=add_location(ast.BinOp(
+                    left=add_location(ast.Attribute(
+                        value=add_location(ast.Name(id='self', ctx=ast.Load())),
                         attr='api_base',
                         ctx=ast.Load()
-                    ),
-                    op=ast.Add(),
-                    right=ast.Call(
-                        func=ast.Attribute(
-                            value=ast.Constant(
+                    )),
+                    op=add_location(ast.Add()),
+                    right=add_location(ast.Call(
+                        func=add_location(ast.Attribute(
+                            value=add_location(ast.Constant(
                                 value=f"{retrieve_op['path'].replace(f'<{pk_param}>', '{}')}/",
                                 kind=None
-                            ),
+                            )),
                             attr='format',
                             ctx=ast.Load()
-                        ),
-                        args=[
-                            ast.Name(id='resource_id', ctx=ast.Load())
-                        ],
+                        )),
+                        args=[add_location(ast.Name(id='resource_id', ctx=ast.Load()))],
                         keywords=[]
-                    )
-                )
-            ),
-            ast.Assign(
-                targets=[
-                    ast.Name(id='response', ctx=ast.Store())
-                ],
-                value=ast.Call(
-                    func=ast.Attribute(
-                        value=ast.Attribute(
-                            value=ast.Name(id='self', ctx=ast.Load()),
+                    ))
+                ))
+            )),
+            add_location(ast.Assign(
+                targets=[add_location(ast.Name(id='response', ctx=ast.Store()))],
+                value=add_location(ast.Call(
+                    func=add_location(ast.Attribute(
+                        value=add_location(ast.Attribute(
+                            value=add_location(ast.Name(id='self', ctx=ast.Load())),
                             attr='client',
                             ctx=ast.Load()
-                        ),
+                        )),
                         attr='get',
                         ctx=ast.Load()
-                    ),
-                    args=[
-                        ast.Name(id='retrieve_url', ctx=ast.Load())
-                    ],
+                    )),
+                    args=[add_location(ast.Name(id='retrieve_url', ctx=ast.Load()))],
                     keywords=[
-                        ast.keyword(
+                        add_location(ast.keyword(
                             arg='headers',
-                            value=ast.Attribute(
-                                value=ast.Name(id='self', ctx=ast.Load()),
+                            value=add_location(ast.Attribute(
+                                value=add_location(ast.Name(id='self', ctx=ast.Load())),
                                 attr='auth_headers',
                                 ctx=ast.Load()
-                            )
-                        )
+                            ))
+                        ))
                     ]
-                )
-            ),
-            ast.Expr(
-                value=ast.Call(
-                    func=ast.Attribute(
-                        value=ast.Name(id='self', ctx=ast.Load()),
+                ))
+            )),
+            add_location(ast.Expr(
+                value=add_location(ast.Call(
+                    func=add_location(ast.Attribute(
+                        value=add_location(ast.Name(id='self', ctx=ast.Load())),
                         attr='assertEqual',
                         ctx=ast.Load()
-                    ),
+                    )),
                     args=[
-                        ast.Attribute(
-                            value=ast.Name(id='response', ctx=ast.Load()),
+                        add_location(ast.Attribute(
+                            value=add_location(ast.Name(id='response', ctx=ast.Load())),
                             attr='status_code',
                             ctx=ast.Load()
-                        ),
-                        ast.Attribute(
-                            value=ast.Name(id='status', ctx=ast.Load()),
+                        )),
+                        add_location(ast.Attribute(
+                            value=add_location(ast.Name(id='status', ctx=ast.Load())),
                             attr='HTTP_200_OK',
                             ctx=ast.Load()
-                        )
+                        ))
                     ],
                     keywords=[]
-                )
-            ),
-            ast.Assign(
-                targets=[
-                    ast.Name(id='response_data', ctx=ast.Store())
-                ],
-                value=ast.Call(
-                    func=ast.Attribute(
-                        value=ast.Name(id='json', ctx=ast.Load()),
+                ))
+            )),
+            add_location(ast.Assign(
+                targets=[add_location(ast.Name(id='response_data', ctx=ast.Store()))],
+                value=add_location(ast.Call(
+                    func=add_location(ast.Attribute(
+                        value=add_location(ast.Name(id='json', ctx=ast.Load())),
                         attr='loads',
                         ctx=ast.Load()
-                    ),
+                    )),
                     args=[
-                        ast.Attribute(
-                            value=ast.Name(id='response', ctx=ast.Load()),
+                        add_location(ast.Attribute(
+                            value=add_location(ast.Name(id='response', ctx=ast.Load())),
                             attr='content',
                             ctx=ast.Load()
-                        )
+                        ))
                     ],
                     keywords=[]
-                )
-            ),
-            ast.Expr(
-                value=ast.Call(
-                    func=ast.Attribute(
-                        value=ast.Name(id='self', ctx=ast.Load()),
+                ))
+            )),
+            add_location(ast.Expr(
+                value=add_location(ast.Call(
+                    func=add_location(ast.Attribute(
+                        value=add_location(ast.Name(id='self', ctx=ast.Load())),
                         attr='assertEqual',
                         ctx=ast.Load()
-                    ),
+                    )),
                     args=[
-                        ast.Subscript(
-                            value=ast.Name(id='response_data', ctx=ast.Load()),
-                            slice=ast.Constant(value='id', kind=None),
+                        add_location(ast.Subscript(
+                            value=add_location(ast.Name(id='response_data', ctx=ast.Load())),
+                            slice=add_location(ast.Constant(value='id', kind=None)),
                             ctx=ast.Load()
-                        ),
-                        ast.Name(id='resource_id', ctx=ast.Load())
+                        )),
+                        add_location(ast.Name(id='resource_id', ctx=ast.Load()))
                     ],
                     keywords=[]
-                )
-            ),
+                ))
+            )),
         ])
 
-        return ast.FunctionDef(
+        return _create_function_def(
             name=f'test_retrieve_{resource_name}',
-            args=ast.arguments(
+            args=add_location(ast.arguments(
                 posonlyargs=[],
-                args=[ast.arg(arg='self', annotation=None)],
+                args=[_create_arg('self')],
                 kwonlyargs=[],
                 kw_defaults=[],
                 defaults=[],
                 vararg=None,
                 kwarg=None
-            ),
+            )),
             body=body,
-            decorator_list=[],
-            returns=None
+            decorator_list=[]
         )
 
     def _create_test_update_method(
@@ -1749,12 +1575,12 @@ class TestCaseGenerator:
         method_name = 'patch' if is_patch else 'update'
 
         body = [
-            ast.Expr(
-                value=ast.Constant(
+            add_location(ast.Expr(
+                value=add_location(ast.Constant(
                     value=f"Test {method_name} a {resource_name} resource.",
                     kind=None
-                )
-            ),
+                ))
+            )),
         ]
 
         # Find the primary key parameter in the path
@@ -1765,12 +1591,12 @@ class TestCaseGenerator:
         # If create operation is available, create a resource first
         if create_op:
             body.append(
-                ast.Expr(
-                    value=ast.Constant(
+                add_location(ast.Expr(
+                    value=add_location(ast.Constant(
                         value="First, create a resource to update",
                         kind=None
-                    )
-                )
+                    ))
+                ))
             )
 
             # Add request data
@@ -1778,100 +1604,88 @@ class TestCaseGenerator:
 
             # Add create request with authentication
             body.extend([
-                ast.Assign(
-                    targets=[
-                        ast.Name(id='create_url', ctx=ast.Store())
-                    ],
-                    value=ast.BinOp(
-                        left=ast.Attribute(
-                            value=ast.Name(id='self', ctx=ast.Load()),
+                add_location(ast.Assign(
+                    targets=[add_location(ast.Name(id='create_url', ctx=ast.Store()))],
+                    value=add_location(ast.BinOp(
+                        left=add_location(ast.Attribute(
+                            value=add_location(ast.Name(id='self', ctx=ast.Load())),
                             attr='api_base',
                             ctx=ast.Load()
-                        ),
-                        op=ast.Add(),
-                        right=ast.Constant(
+                        )),
+                        op=add_location(ast.Add()),
+                        right=add_location(ast.Constant(
                             value=f"{create_op['path'].split('<')[0]}/",
                             kind=None
-                        )
-                    )
-                ),
-                ast.Assign(
-                    targets=[
-                        ast.Name(id='create_response', ctx=ast.Store())
-                    ],
-                    value=ast.Call(
-                        func=ast.Attribute(
-                            value=ast.Attribute(
-                                value=ast.Name(id='self', ctx=ast.Load()),
+                        ))
+                    ))
+                )),
+                add_location(ast.Assign(
+                    targets=[add_location(ast.Name(id='create_response', ctx=ast.Store()))],
+                    value=add_location(ast.Call(
+                        func=add_location(ast.Attribute(
+                            value=add_location(ast.Attribute(
+                                value=add_location(ast.Name(id='self', ctx=ast.Load())),
                                 attr='client',
                                 ctx=ast.Load()
-                            ),
+                            )),
                             attr='post',
                             ctx=ast.Load()
-                        ),
-                        args=[
-                            ast.Name(id='create_url', ctx=ast.Load()),
-                        ],
+                        )),
+                        args=[add_location(ast.Name(id='create_url', ctx=ast.Load()))],
                         keywords=[
-                            ast.keyword(
+                            add_location(ast.keyword(
                                 arg='data',
-                                value=ast.Name(id='data', ctx=ast.Load())
-                            ),
-                            ast.keyword(
+                                value=add_location(ast.Name(id='data', ctx=ast.Load()))
+                            )),
+                            add_location(ast.keyword(
                                 arg='format',
-                                value=ast.Constant(value='json', kind=None)
-                            ),
-                            ast.keyword(
+                                value=add_location(ast.Constant(value='json', kind=None))
+                            )),
+                            add_location(ast.keyword(
                                 arg='headers',
-                                value=ast.Attribute(
-                                    value=ast.Name(id='self', ctx=ast.Load()),
+                                value=add_location(ast.Attribute(
+                                    value=add_location(ast.Name(id='self', ctx=ast.Load())),
                                     attr='auth_headers',
                                     ctx=ast.Load()
-                                )
-                            )
+                                ))
+                            ))
                         ]
-                    )
-                ),
-                ast.Assign(
-                    targets=[
-                        ast.Name(id='created_data', ctx=ast.Store())
-                    ],
-                    value=ast.Call(
-                        func=ast.Attribute(
-                            value=ast.Name(id='json', ctx=ast.Load()),
+                    ))
+                )),
+                add_location(ast.Assign(
+                    targets=[add_location(ast.Name(id='created_data', ctx=ast.Store()))],
+                    value=add_location(ast.Call(
+                        func=add_location(ast.Attribute(
+                            value=add_location(ast.Name(id='json', ctx=ast.Load())),
                             attr='loads',
                             ctx=ast.Load()
-                        ),
+                        )),
                         args=[
-                            ast.Attribute(
-                                value=ast.Name(id='create_response', ctx=ast.Load()),
+                            add_location(ast.Attribute(
+                                value=add_location(ast.Name(id='create_response', ctx=ast.Load())),
                                 attr='content',
                                 ctx=ast.Load()
-                            )
+                            ))
                         ],
                         keywords=[]
-                    )
-                ),
-                ast.Assign(
-                    targets=[
-                        ast.Name(id='resource_id', ctx=ast.Store())
-                    ],
-                    value=ast.Subscript(
-                        value=ast.Name(id='created_data', ctx=ast.Load()),
-                        slice=ast.Constant(value='id', kind=None),
+                    ))
+                )),
+                add_location(ast.Assign(
+                    targets=[add_location(ast.Name(id='resource_id', ctx=ast.Store()))],
+                    value=add_location(ast.Subscript(
+                        value=add_location(ast.Name(id='created_data', ctx=ast.Load())),
+                        slice=add_location(ast.Constant(value='id', kind=None)),
                         ctx=ast.Load()
-                    )
-                ),
+                    ))
+                )),
             ])
         else:
             # If no create operation, assume resource with ID 1 exists
             body.append(
-                ast.Assign(
-                    targets=[
-                        ast.Name(id='resource_id', ctx=ast.Store())
-                    ],
-                    value=ast.Constant(value=1, kind=None)
-                )
+                add_location(ast.Assign(
+                    targets=[add_location(ast.Name(id='resource_id', ctx=ast.Store()))],
+                    value=add_location(ast.Constant(value=1, kind=None))
+                ))
             )
 
         # Get the request schema to determine what can be modified
@@ -1880,15 +1694,13 @@ class TestCaseGenerator:
 
         # Create update data dictionary
         body.append(
-            ast.Assign(
-                targets=[
-                    ast.Name(id='update_data', ctx=ast.Store())
-                ],
-                value=ast.Dict(
+            add_location(ast.Assign(
+                targets=[add_location(ast.Name(id='update_data', ctx=ast.Store()))],
+                value=add_location(ast.Dict(
                     keys=[],
                     values=[]
-                )
-            )
+                ))
+            ))
         )
 
         # Find a field to modify and its value
@@ -1906,42 +1718,36 @@ class TestCaseGenerator:
                 if schema_type == 'string':
                     modified_value = f"Updated {key} value"
                     body.append(
-                        ast.Assign(
-                            targets=[
-                                ast.Subscript(
-                                    value=ast.Name(id='update_data', ctx=ast.Load()),
-                                    slice=ast.Constant(value=key, kind=None),
-                                    ctx=ast.Store()
-                                )
-                            ],
-                            value=ast.Constant(value=modified_value, kind=None)
-                        )
+                        add_location(ast.Assign(
+                            targets=[add_location(ast.Subscript(
+                                value=add_location(ast.Name(id='update_data', ctx=ast.Load())),
+                                slice=add_location(ast.Constant(value=key, kind=None)),
+                                ctx=ast.Store()
+                            ))],
+                            value=add_location(ast.Constant(value=modified_value, kind=None))
+                        ))
                     )
                 elif schema_type in ('integer', 'number'):
                     body.append(
-                        ast.Assign(
-                            targets=[
-                                ast.Subscript(
-                                    value=ast.Name(id='update_data', ctx=ast.Load()),
-                                    slice=ast.Constant(value=key, kind=None),
-                                    ctx=ast.Store()
-                                )
-                            ],
-                            value=ast.Constant(value=42, kind=None)
-                        )
+                        add_location(ast.Assign(
+                            targets=[add_location(ast.Subscript(
+                                value=add_location(ast.Name(id='update_data', ctx=ast.Load())),
+                                slice=add_location(ast.Constant(value=key, kind=None)),
+                                ctx=ast.Store()
+                            ))],
+                            value=add_location(ast.Constant(value=42, kind=None))
+                        ))
                     )
                 elif schema_type == 'boolean':
                     body.append(
-                        ast.Assign(
-                            targets=[
-                                ast.Subscript(
-                                    value=ast.Name(id='update_data', ctx=ast.Load()),
-                                    slice=ast.Constant(value=key, kind=None),
-                                    ctx=ast.Store()
-                                )
-                            ],
-                            value=ast.Constant(value=True, kind=None)
-                        )
+                        add_location(ast.Assign(
+                            targets=[add_location(ast.Subscript(
+                                value=add_location(ast.Name(id='update_data', ctx=ast.Load())),
+                                slice=add_location(ast.Constant(value=key, kind=None)),
+                                ctx=ast.Store()
+                            ))],
+                            value=add_location(ast.Constant(value=True, kind=None))
+                        ))
                     )
 
                 # We only need one field to test
@@ -1951,106 +1757,96 @@ class TestCaseGenerator:
         if not modified_field:
             modified_field = 'test_field'
             body.append(
-                ast.Assign(
-                    targets=[
-                        ast.Subscript(
-                            value=ast.Name(id='update_data', ctx=ast.Load()),
-                            slice=ast.Constant(value=modified_field, kind=None),
-                            ctx=ast.Store()
-                        )
-                    ],
-                    value=ast.Constant(value='test_value', kind=None)
-                )
+                add_location(ast.Assign(
+                    targets=[add_location(ast.Subscript(
+                        value=add_location(ast.Name(id='update_data', ctx=ast.Load())),
+                        slice=add_location(ast.Constant(value=modified_field, kind=None)),
+                        ctx=ast.Store()
+                    ))],
+                    value=add_location(ast.Constant(value='test_value', kind=None))
+                ))
             )
 
         # Add update request with authentication
         body.extend([
-            ast.Assign(
-                targets=[
-                    ast.Name(id='update_url', ctx=ast.Store())
-                ],
-                value=ast.BinOp(
-                    left=ast.Attribute(
-                        value=ast.Name(id='self', ctx=ast.Load()),
+            add_location(ast.Assign(
+                targets=[add_location(ast.Name(id='update_url', ctx=ast.Store()))],
+                value=add_location(ast.BinOp(
+                    left=add_location(ast.Attribute(
+                        value=add_location(ast.Name(id='self', ctx=ast.Load())),
                         attr='api_base',
                         ctx=ast.Load()
-                    ),
-                    op=ast.Add(),
-                    right=ast.Call(
-                        func=ast.Attribute(
-                            value=ast.Constant(
+                    )),
+                    op=add_location(ast.Add()),
+                    right=add_location(ast.Call(
+                        func=add_location(ast.Attribute(
+                            value=add_location(ast.Constant(
                                 value=f"{update_op['path'].replace(f'<{pk_param}>', '{}')}/",
                                 kind=None
-                            ),
+                            )),
                             attr='format',
                             ctx=ast.Load()
-                        ),
-                        args=[
-                            ast.Name(id='resource_id', ctx=ast.Load())
-                        ],
+                        )),
+                        args=[add_location(ast.Name(id='resource_id', ctx=ast.Load()))],
                         keywords=[]
-                    )
-                )
-            ),
-            ast.Assign(
-                targets=[
-                    ast.Name(id='response', ctx=ast.Store())
-                ],
-                value=ast.Call(
-                    func=ast.Attribute(
-                        value=ast.Attribute(
-                            value=ast.Name(id='self', ctx=ast.Load()),
-                            attr='client',
+                    ))
+                ))
+            )),
+            add_location(ast.Assign(
+                targets=[add_location(ast.Name(id='update_response', ctx=ast.Store()))],
+                value=add_location(ast.Call(
+                    func=add_location(ast.Attribute(
+                        value=add_location(ast.Attribute(
+                            value=add_location(ast.Name(id='self', ctx=ast.Load())),
+                            attr=update_op['method'],
                             ctx=ast.Load()
-                        ),
-                        attr=update_op['method'],
+                        )),
+                        attr='post',
                         ctx=ast.Load()
-                    ),
-                    args=[
-                        ast.Name(id='update_url', ctx=ast.Load()),
-                    ],
+                    )),
+                    args=[add_location(ast.Name(id='update_url', ctx=ast.Load()))],
                     keywords=[
-                        ast.keyword(
+                        add_location(ast.keyword(
                             arg='data',
-                            value=ast.Name(id='update_data', ctx=ast.Load())
-                        ),
-                        ast.keyword(
+                            value=add_location(ast.Name(id='update_data', ctx=ast.Load()))
+                        )),
+                        add_location(ast.keyword(
                             arg='format',
-                            value=ast.Constant(value='json', kind=None)
-                        ),
-                        ast.keyword(
+                            value=add_location(ast.Constant(value='json', kind=None))
+                        )),
+                        add_location(ast.keyword(
                             arg='headers',
-                            value=ast.Attribute(
-                                value=ast.Name(id='self', ctx=ast.Load()),
+                            value=add_location(ast.Attribute(
+                                value=add_location(ast.Name(id='self', ctx=ast.Load())),
                                 attr='auth_headers',
                                 ctx=ast.Load()
-                            )
-                        )
+                            ))
+                        ))
                     ]
-                )
-            ),
-            ast.Expr(
-                value=ast.Call(
-                    func=ast.Attribute(
-                        value=ast.Name(id='self', ctx=ast.Load()),
+                ))
+            )),
+            add_location(ast.Expr(
+                value=add_location(ast.Call(
+                    func=add_location(ast.Attribute(
+                        value=add_location(ast.Name(id='self', ctx=ast.Load())),
                         attr='assertEqual',
                         ctx=ast.Load()
-                    ),
+                    )),
                     args=[
-                        ast.Attribute(
-                            value=ast.Name(id='response', ctx=ast.Load()),
+                        add_location(ast.Attribute(
+                            value=add_location(ast.Name(id='update_response', ctx=ast.Load())),
                             attr='status_code',
                             ctx=ast.Load()
-                        ),
-                        ast.Attribute(
-                            value=ast.Name(id='status', ctx=ast.Load()),
+                        )),
+                        add_location(ast.Attribute(
+                            value=add_location(ast.Name(id='status', ctx=ast.Load())),
                             attr='HTTP_200_OK',
                             ctx=ast.Load()
-                        )
+                        ))
                     ],
                     keywords=[]
-                )
-            ),
+                ))
+            )),
         ])
 
         # If retrieve operation is available, verify the update
@@ -2061,149 +1857,138 @@ class TestCaseGenerator:
                 retrieve_pk_param = 'id'  # Default if not found
 
             body.extend([
-                ast.Expr(
-                    value=ast.Constant(
+                add_location(ast.Expr(
+                    value=add_location(ast.Constant(
                         value="Verify the update with a GET request",
                         kind=None
-                    )
-                ),
-                ast.Assign(
-                    targets=[
-                        ast.Name(id='retrieve_url', ctx=ast.Store())
-                    ],
-                    value=ast.BinOp(
-                        left=ast.Attribute(
-                            value=ast.Name(id='self', ctx=ast.Load()),
+                    ))
+                )),
+                add_location(ast.Assign(
+                    targets=[add_location(ast.Name(id='retrieve_url', ctx=ast.Store()))],
+                    value=add_location(ast.BinOp(
+                        left=add_location(ast.Attribute(
+                            value=add_location(ast.Name(id='self', ctx=ast.Load())),
                             attr='api_base',
                             ctx=ast.Load()
-                        ),
-                        op=ast.Add(),
-                        right=ast.Call(
-                            func=ast.Attribute(
-                                value=ast.Constant(
+                        )),
+                        op=add_location(ast.Add()),
+                        right=add_location(ast.Call(
+                            func=add_location(ast.Attribute(
+                                value=add_location(ast.Constant(
                                     value=f"{retrieve_op['path'].replace(f'<{retrieve_pk_param}>', '{}')}/",
                                     kind=None
-                                ),
+                                )),
                                 attr='format',
                                 ctx=ast.Load()
-                            ),
-                            args=[
-                                ast.Name(id='resource_id', ctx=ast.Load())
-                            ],
+                            )),
+                            args=[add_location(ast.Name(id='resource_id', ctx=ast.Load()))],
                             keywords=[]
-                        )
-                    )
-                ),
-                ast.Assign(
-                    targets=[
-                        ast.Name(id='get_response', ctx=ast.Store())
-                    ],
-                    value=ast.Call(
-                        func=ast.Attribute(
-                            value=ast.Attribute(
-                                value=ast.Name(id='self', ctx=ast.Load()),
+                        ))
+                    ))
+                )),
+                add_location(ast.Assign(
+                    targets=[add_location(ast.Name(id='get_response', ctx=ast.Store()))],
+                    value=add_location(ast.Call(
+                        func=add_location(ast.Attribute(
+                            value=add_location(ast.Attribute(
+                                value=add_location(ast.Name(id='self', ctx=ast.Load())),
                                 attr='client',
                                 ctx=ast.Load()
-                            ),
+                            )),
                             attr='get',
                             ctx=ast.Load()
-                        ),
-                        args=[
-                            ast.Name(id='retrieve_url', ctx=ast.Load())
-                        ],
+                        )),
+                        args=[add_location(ast.Name(id='retrieve_url', ctx=ast.Load()))],
                         keywords=[
-                            ast.keyword(
+                            add_location(ast.keyword(
                                 arg='headers',
-                                value=ast.Attribute(
-                                    value=ast.Name(id='self', ctx=ast.Load()),
+                                value=add_location(ast.Attribute(
+                                    value=add_location(ast.Name(id='self', ctx=ast.Load())),
                                     attr='auth_headers',
                                     ctx=ast.Load()
-                                )
-                            )
+                                ))
+                            ))
                         ]
-                    )
-                ),
-                ast.Expr(
-                    value=ast.Call(
-                        func=ast.Attribute(
-                            value=ast.Name(id='self', ctx=ast.Load()),
+                    ))
+                )),
+                add_location(ast.Expr(
+                    value=add_location(ast.Call(
+                        func=add_location(ast.Attribute(
+                            value=add_location(ast.Name(id='self', ctx=ast.Load())),
                             attr='assertEqual',
                             ctx=ast.Load()
-                        ),
+                        )),
                         args=[
-                            ast.Attribute(
-                                value=ast.Name(id='get_response', ctx=ast.Load()),
+                            add_location(ast.Attribute(
+                                value=add_location(ast.Name(id='get_response', ctx=ast.Load())),
                                 attr='status_code',
                                 ctx=ast.Load()
-                            ),
-                            ast.Attribute(
-                                value=ast.Name(id='status', ctx=ast.Load()),
+                            )),
+                            add_location(ast.Attribute(
+                                value=add_location(ast.Name(id='status', ctx=ast.Load())),
                                 attr='HTTP_200_OK',
                                 ctx=ast.Load()
-                            )
+                            ))
                         ],
                         keywords=[]
-                    )
-                ),
-                ast.Assign(
-                    targets=[
-                        ast.Name(id='get_data', ctx=ast.Store())
-                    ],
-                    value=ast.Call(
-                        func=ast.Attribute(
-                            value=ast.Name(id='json', ctx=ast.Load()),
+                    ))
+                )),
+                add_location(ast.Assign(
+                    targets=[add_location(ast.Name(id='get_data', ctx=ast.Store()))],
+                    value=add_location(ast.Call(
+                        func=add_location(ast.Attribute(
+                            value=add_location(ast.Name(id='json', ctx=ast.Load())),
                             attr='loads',
                             ctx=ast.Load()
-                        ),
+                        )),
                         args=[
-                            ast.Attribute(
-                                value=ast.Name(id='get_response', ctx=ast.Load()),
+                            add_location(ast.Attribute(
+                                value=add_location(ast.Name(id='get_response', ctx=ast.Load())),
                                 attr='content',
                                 ctx=ast.Load()
-                            )
+                            ))
                         ],
                         keywords=[]
-                    )
-                ),
+                    ))
+                )),
                 # Verify the updated field
-                ast.Expr(
-                    value=ast.Call(
-                        func=ast.Attribute(
-                            value=ast.Name(id='self', ctx=ast.Load()),
+                add_location(ast.Expr(
+                    value=add_location(ast.Call(
+                        func=add_location(ast.Attribute(
+                            value=add_location(ast.Name(id='self', ctx=ast.Load())),
                             attr='assertEqual',
                             ctx=ast.Load()
-                        ),
+                        )),
                         args=[
-                            ast.Subscript(
-                                value=ast.Name(id='get_data', ctx=ast.Load()),
-                                slice=ast.Constant(value=modified_field, kind=None),
+                            add_location(ast.Subscript(
+                                value=add_location(ast.Name(id='get_data', ctx=ast.Load())),
+                                slice=add_location(ast.Constant(value=modified_field, kind=None)),
                                 ctx=ast.Load()
-                            ),
-                            ast.Subscript(
-                                value=ast.Name(id='update_data', ctx=ast.Load()),
-                                slice=ast.Constant(value=modified_field, kind=None),
+                            )),
+                            add_location(ast.Subscript(
+                                value=add_location(ast.Name(id='update_data', ctx=ast.Load())),
+                                slice=add_location(ast.Constant(value=modified_field, kind=None)),
                                 ctx=ast.Load()
-                            )
+                            ))
                         ],
                         keywords=[]
-                    )
-                ),
+                    ))
+                )),
             ])
 
-        return ast.FunctionDef(
+        return _create_function_def(
             name=f'test_{method_name}_{resource_name}',
-            args=ast.arguments(
+            args=add_location(ast.arguments(
                 posonlyargs=[],
-                args=[ast.arg(arg='self', annotation=None)],
+                args=[_create_arg('self')],
                 kwonlyargs=[],
                 kw_defaults=[],
                 defaults=[],
                 vararg=None,
                 kwarg=None
-            ),
+            )),
             body=body,
-            decorator_list=[],
-            returns=None
+            decorator_list=[]
         )
 
     def _create_test_delete_method(
@@ -2224,12 +2009,12 @@ class TestCaseGenerator:
             An AST FunctionDef node for the test method
         """
         body = [
-            ast.Expr(
-                value=ast.Constant(
+            add_location(ast.Expr(
+                value=add_location(ast.Constant(
                     value=f"Test deleting a {resource_name} resource.",
                     kind=None
-                )
-            ),
+                ))
+            )),
         ]
 
         # Find the primary key parameter in the path
@@ -2240,12 +2025,12 @@ class TestCaseGenerator:
         # If create operation is available, create a resource first
         if create_op:
             body.append(
-                ast.Expr(
-                    value=ast.Constant(
+                add_location(ast.Expr(
+                    value=add_location(ast.Constant(
                         value="First, create a resource to delete",
                         kind=None
-                    )
-                )
+                    ))
+                ))
             )
 
             # Add request data
@@ -2253,182 +2038,162 @@ class TestCaseGenerator:
 
             # Add create request with authentication
             body.extend([
-                ast.Assign(
-                    targets=[
-                        ast.Name(id='create_url', ctx=ast.Store())
-                    ],
-                    value=ast.BinOp(
-                        left=ast.Attribute(
-                            value=ast.Name(id='self', ctx=ast.Load()),
+                add_location(ast.Assign(
+                    targets=[add_location(ast.Name(id='create_url', ctx=ast.Store()))],
+                    value=add_location(ast.BinOp(
+                        left=add_location(ast.Attribute(
+                            value=add_location(ast.Name(id='self', ctx=ast.Load())),
                             attr='api_base',
                             ctx=ast.Load()
-                        ),
-                        op=ast.Add(),
-                        right=ast.Constant(
+                        )),
+                        op=add_location(ast.Add()),
+                        right=add_location(ast.Constant(
                             value=f"{create_op['path'].split('<')[0]}/",
                             kind=None
-                        )
-                    )
-                ),
-                ast.Assign(
-                    targets=[
-                        ast.Name(id='create_response', ctx=ast.Store())
-                    ],
-                    value=ast.Call(
-                        func=ast.Attribute(
-                            value=ast.Attribute(
-                                value=ast.Name(id='self', ctx=ast.Load()),
+                        ))
+                    ))
+                )),
+                add_location(ast.Assign(
+                    targets=[add_location(ast.Name(id='create_response', ctx=ast.Store()))],
+                    value=add_location(ast.Call(
+                        func=add_location(ast.Attribute(
+                            value=add_location(ast.Attribute(
+                                value=add_location(ast.Name(id='self', ctx=ast.Load())),
                                 attr='client',
                                 ctx=ast.Load()
-                            ),
+                            )),
                             attr='post',
                             ctx=ast.Load()
-                        ),
-                        args=[
-                            ast.Name(id='create_url', ctx=ast.Load()),
-                        ],
+                        )),
+                        args=[add_location(ast.Name(id='create_url', ctx=ast.Load()))],
                         keywords=[
-                            ast.keyword(
+                            add_location(ast.keyword(
                                 arg='data',
-                                value=ast.Name(id='data', ctx=ast.Load())
-                            ),
-                            ast.keyword(
+                                value=add_location(ast.Name(id='data', ctx=ast.Load()))
+                            )),
+                            add_location(ast.keyword(
                                 arg='format',
-                                value=ast.Constant(value='json', kind=None)
-                            ),
-                            ast.keyword(
+                                value=add_location(ast.Constant(value='json', kind=None))
+                            )),
+                            add_location(ast.keyword(
                                 arg='headers',
-                                value=ast.Attribute(
-                                    value=ast.Name(id='self', ctx=ast.Load()),
+                                value=add_location(ast.Attribute(
+                                    value=add_location(ast.Name(id='self', ctx=ast.Load())),
                                     attr='auth_headers',
                                     ctx=ast.Load()
-                                )
-                            )
+                                ))
+                            ))
                         ]
-                    )
-                ),
-                ast.Assign(
-                    targets=[
-                        ast.Name(id='created_data', ctx=ast.Store())
-                    ],
-                    value=ast.Call(
-                        func=ast.Attribute(
-                            value=ast.Name(id='json', ctx=ast.Load()),
+                    ))
+                )),
+                add_location(ast.Assign(
+                    targets=[add_location(ast.Name(id='created_data', ctx=ast.Store()))],
+                    value=add_location(ast.Call(
+                        func=add_location(ast.Attribute(
+                            value=add_location(ast.Name(id='json', ctx=ast.Load())),
                             attr='loads',
                             ctx=ast.Load()
-                        ),
+                        )),
                         args=[
-                            ast.Attribute(
-                                value=ast.Name(id='create_response', ctx=ast.Load()),
+                            add_location(ast.Attribute(
+                                value=add_location(ast.Name(id='create_response', ctx=ast.Load())),
                                 attr='content',
                                 ctx=ast.Load()
-                            )
+                            ))
                         ],
                         keywords=[]
-                    )
-                ),
-                ast.Assign(
-                    targets=[
-                        ast.Name(id='resource_id', ctx=ast.Store())
-                    ],
-                    value=ast.Subscript(
-                        value=ast.Name(id='created_data', ctx=ast.Load()),
-                        slice=ast.Constant(value='id', kind=None),
+                    ))
+                )),
+                add_location(ast.Assign(
+                    targets=[add_location(ast.Name(id='resource_id', ctx=ast.Store()))],
+                    value=add_location(ast.Subscript(
+                        value=add_location(ast.Name(id='created_data', ctx=ast.Load())),
+                        slice=add_location(ast.Constant(value='id', kind=None)),
                         ctx=ast.Load()
-                    )
-                ),
+                    ))
+                )),
             ])
         else:
             # If no create operation, assume resource with ID 1 exists
             body.append(
-                ast.Assign(
-                    targets=[
-                        ast.Name(id='resource_id', ctx=ast.Store())
-                    ],
-                    value=ast.Constant(value=1, kind=None)
-                )
+                add_location(ast.Assign(
+                    targets=[add_location(ast.Name(id='resource_id', ctx=ast.Store()))],
+                    value=add_location(ast.Constant(value=1, kind=None))
+                ))
             )
 
         # Add delete request with authentication
         body.extend([
-            ast.Assign(
-                targets=[
-                    ast.Name(id='delete_url', ctx=ast.Store())
-                ],
-                value=ast.BinOp(
-                    left=ast.Attribute(
-                        value=ast.Name(id='self', ctx=ast.Load()),
+            add_location(ast.Assign(
+                targets=[add_location(ast.Name(id='delete_url', ctx=ast.Store()))],
+                value=add_location(ast.BinOp(
+                    left=add_location(ast.Attribute(
+                        value=add_location(ast.Name(id='self', ctx=ast.Load())),
                         attr='api_base',
                         ctx=ast.Load()
-                    ),
-                    op=ast.Add(),
-                    right=ast.Call(
-                        func=ast.Attribute(
-                            value=ast.Constant(
+                    )),
+                    op=add_location(ast.Add()),
+                    right=add_location(ast.Call(
+                        func=add_location(ast.Attribute(
+                            value=add_location(ast.Constant(
                                 value=f"{delete_op['path'].replace(f'<{pk_param}>', '{}')}/",
                                 kind=None
-                            ),
+                            )),
                             attr='format',
                             ctx=ast.Load()
-                        ),
-                        args=[
-                            ast.Name(id='resource_id', ctx=ast.Load())
-                        ],
+                        )),
+                        args=[add_location(ast.Name(id='resource_id', ctx=ast.Load()))],
                         keywords=[]
-                    )
-                )
-            ),
-            ast.Assign(
-                targets=[
-                    ast.Name(id='response', ctx=ast.Store())
-                ],
-                value=ast.Call(
-                    func=ast.Attribute(
-                        value=ast.Attribute(
-                            value=ast.Name(id='self', ctx=ast.Load()),
+                    ))
+                ))
+            )),
+            add_location(ast.Assign(
+                targets=[add_location(ast.Name(id='delete_response', ctx=ast.Store()))],
+                value=add_location(ast.Call(
+                    func=add_location(ast.Attribute(
+                        value=add_location(ast.Attribute(
+                            value=add_location(ast.Name(id='self', ctx=ast.Load())),
                             attr='client',
                             ctx=ast.Load()
-                        ),
+                        )),
                         attr='delete',
                         ctx=ast.Load()
-                    ),
-                    args=[
-                        ast.Name(id='delete_url', ctx=ast.Load())
-                    ],
+                    )),
+                    args=[add_location(ast.Name(id='delete_url', ctx=ast.Load()))],
                     keywords=[
-                        ast.keyword(
+                        add_location(ast.keyword(
                             arg='headers',
-                            value=ast.Attribute(
-                                value=ast.Name(id='self', ctx=ast.Load()),
+                            value=add_location(ast.Attribute(
+                                value=add_location(ast.Name(id='self', ctx=ast.Load())),
                                 attr='auth_headers',
                                 ctx=ast.Load()
-                            )
-                        )
+                            ))
+                        ))
                     ]
-                )
-            ),
-            ast.Expr(
-                value=ast.Call(
-                    func=ast.Attribute(
-                        value=ast.Name(id='self', ctx=ast.Load()),
+                ))
+            )),
+            add_location(ast.Expr(
+                value=add_location(ast.Call(
+                    func=add_location(ast.Attribute(
+                        value=add_location(ast.Name(id='self', ctx=ast.Load())),
                         attr='assertEqual',
                         ctx=ast.Load()
-                    ),
+                    )),
                     args=[
-                        ast.Attribute(
-                            value=ast.Name(id='response', ctx=ast.Load()),
+                        add_location(ast.Attribute(
+                            value=add_location(ast.Name(id='delete_response', ctx=ast.Load())),
                             attr='status_code',
                             ctx=ast.Load()
-                        ),
-                        ast.Attribute(
-                            value=ast.Name(id='status', ctx=ast.Load()),
+                        )),
+                        add_location(ast.Attribute(
+                            value=add_location(ast.Name(id='status', ctx=ast.Load())),
                             attr='HTTP_204_NO_CONTENT',
                             ctx=ast.Load()
-                        )
+                        ))
                     ],
                     keywords=[]
-                )
-            ),
+                ))
+            )),
         ])
 
         # If retrieve operation is available, verify the deletion
@@ -2439,106 +2204,97 @@ class TestCaseGenerator:
                 retrieve_pk_param = 'id'  # Default if not found
 
             body.extend([
-                ast.Expr(
-                    value=ast.Constant(
+                add_location(ast.Expr(
+                    value=add_location(ast.Constant(
                         value="Verify the resource was deleted",
                         kind=None
-                    )
-                ),
-                ast.Assign(
-                    targets=[
-                        ast.Name(id='retrieve_url', ctx=ast.Store())
-                    ],
-                    value=ast.BinOp(
-                        left=ast.Attribute(
-                            value=ast.Name(id='self', ctx=ast.Load()),
+                    ))
+                )),
+                add_location(ast.Assign(
+                    targets=[add_location(ast.Name(id='retrieve_url', ctx=ast.Store()))],
+                    value=add_location(ast.BinOp(
+                        left=add_location(ast.Attribute(
+                            value=add_location(ast.Name(id='self', ctx=ast.Load())),
                             attr='api_base',
                             ctx=ast.Load()
-                        ),
-                        op=ast.Add(),
-                        right=ast.Call(
-                            func=ast.Attribute(
-                                value=ast.Constant(
+                        )),
+                        op=add_location(ast.Add()),
+                        right=add_location(ast.Call(
+                            func=add_location(ast.Attribute(
+                                value=add_location(ast.Constant(
                                     value=f"{retrieve_op['path'].replace(f'<{retrieve_pk_param}>', '{}')}/",
                                     kind=None
-                                ),
+                                )),
                                 attr='format',
                                 ctx=ast.Load()
-                            ),
-                            args=[
-                                ast.Name(id='resource_id', ctx=ast.Load())
-                            ],
+                            )),
+                            args=[add_location(ast.Name(id='resource_id', ctx=ast.Load()))],
                             keywords=[]
-                        )
-                    )
-                ),
-                ast.Assign(
-                    targets=[
-                        ast.Name(id='get_response', ctx=ast.Store())
-                    ],
-                    value=ast.Call(
-                        func=ast.Attribute(
-                            value=ast.Attribute(
-                                value=ast.Name(id='self', ctx=ast.Load()),
+                        ))
+                    ))
+                )),
+                add_location(ast.Assign(
+                    targets=[add_location(ast.Name(id='get_response', ctx=ast.Store()))],
+                    value=add_location(ast.Call(
+                        func=add_location(ast.Attribute(
+                            value=add_location(ast.Attribute(
+                                value=add_location(ast.Name(id='self', ctx=ast.Load())),
                                 attr='client',
                                 ctx=ast.Load()
-                            ),
+                            )),
                             attr='get',
                             ctx=ast.Load()
-                        ),
-                        args=[
-                            ast.Name(id='retrieve_url', ctx=ast.Load())
-                        ],
+                        )),
+                        args=[add_location(ast.Name(id='retrieve_url', ctx=ast.Load()))],
                         keywords=[
-                            ast.keyword(
+                            add_location(ast.keyword(
                                 arg='headers',
-                                value=ast.Attribute(
-                                    value=ast.Name(id='self', ctx=ast.Load()),
+                                value=add_location(ast.Attribute(
+                                    value=add_location(ast.Name(id='self', ctx=ast.Load())),
                                     attr='auth_headers',
                                     ctx=ast.Load()
-                                )
-                            )
+                                ))
+                            ))
                         ]
-                    )
-                ),
-                ast.Expr(
-                    value=ast.Call(
-                        func=ast.Attribute(
-                            value=ast.Name(id='self', ctx=ast.Load()),
+                    ))
+                )),
+                add_location(ast.Expr(
+                    value=add_location(ast.Call(
+                        func=add_location(ast.Attribute(
+                            value=add_location(ast.Name(id='self', ctx=ast.Load())),
                             attr='assertEqual',
                             ctx=ast.Load()
-                        ),
+                        )),
                         args=[
-                            ast.Attribute(
-                                value=ast.Name(id='get_response', ctx=ast.Load()),
+                            add_location(ast.Attribute(
+                                value=add_location(ast.Name(id='get_response', ctx=ast.Load())),
                                 attr='status_code',
                                 ctx=ast.Load()
-                            ),
-                            ast.Attribute(
-                                value=ast.Name(id='status', ctx=ast.Load()),
+                            )),
+                            add_location(ast.Attribute(
+                                value=add_location(ast.Name(id='status', ctx=ast.Load())),
                                 attr='HTTP_404_NOT_FOUND',
                                 ctx=ast.Load()
-                            )
+                            ))
                         ],
                         keywords=[]
-                    )
-                ),
+                    ))
+                )),
             ])
 
-        return ast.FunctionDef(
+        return _create_function_def(
             name=f'test_delete_{resource_name}',
-            args=ast.arguments(
+            args=add_location(ast.arguments(
                 posonlyargs=[],
-                args=[ast.arg(arg='self', annotation=None)],
+                args=[_create_arg('self')],
                 kwonlyargs=[],
                 kw_defaults=[],
                 defaults=[],
                 vararg=None,
                 kwarg=None
-            ),
+            )),
             body=body,
-            decorator_list=[],
-            returns=None
+            decorator_list=[]
         )
 
     def _create_test_crud_method(self, resource_name: str, crud_ops: Dict) -> Optional[ast.FunctionDef]:
@@ -2565,18 +2321,18 @@ class TestCaseGenerator:
             return None
 
         body = [
-            ast.Expr(
-                value=ast.Constant(
+            add_location(ast.Expr(
+                value=add_location(ast.Constant(
                     value=f"Test the complete CRUD cycle for {resource_name} resource.",
                     kind=None
-                )
-            ),
-            ast.Expr(
-                value=ast.Constant(
+                ))
+            )),
+            add_location(ast.Expr(
+                value=add_location(ast.Constant(
                     value="1. Create a resource",
                     kind=None
-                )
-            ),
+                ))
+            )),
         ]
 
         resources = self.endpoint_analyzer.identify_resources_from_tags()
@@ -2589,126 +2345,116 @@ class TestCaseGenerator:
 
             # Add create request with authentication
             body.extend([
-                ast.Assign(
-                    targets=[
-                        ast.Name(id='create_url', ctx=ast.Store())
-                    ],
-                    value=ast.BinOp(
-                        left=ast.Attribute(
-                            value=ast.Name(id='self', ctx=ast.Load()),
+                add_location(ast.Assign(
+                    targets=[add_location(ast.Name(id='create_url', ctx=ast.Store()))],
+                    value=add_location(ast.BinOp(
+                        left=add_location(ast.Attribute(
+                            value=add_location(ast.Name(id='self', ctx=ast.Load())),
                             attr='api_base',
                             ctx=ast.Load()
-                        ),
-                        op=ast.Add(),
-                        right=ast.Constant(
+                        )),
+                        op=add_location(ast.Add()),
+                        right=add_location(ast.Constant(
                             value=f"{create_op['path'].split('<')[0]}/",
                             kind=None
-                        )
-                    )
-                ),
-                ast.Assign(
-                    targets=[
-                        ast.Name(id='create_response', ctx=ast.Store())
-                    ],
-                    value=ast.Call(
-                        func=ast.Attribute(
-                            value=ast.Attribute(
-                                value=ast.Name(id='self', ctx=ast.Load()),
+                        ))
+                    ))
+                )),
+                add_location(ast.Assign(
+                    targets=[add_location(ast.Name(id='create_response', ctx=ast.Store()))],
+                    value=add_location(ast.Call(
+                        func=add_location(ast.Attribute(
+                            value=add_location(ast.Attribute(
+                                value=add_location(ast.Name(id='self', ctx=ast.Load())),
                                 attr='client',
                                 ctx=ast.Load()
-                            ),
+                            )),
                             attr='post',
                             ctx=ast.Load()
-                        ),
-                        args=[
-                            ast.Name(id='create_url', ctx=ast.Load()),
-                        ],
+                        )),
+                        args=[add_location(ast.Name(id='create_url', ctx=ast.Load()))],
                         keywords=[
-                            ast.keyword(
+                            add_location(ast.keyword(
                                 arg='data',
-                                value=ast.Name(id='data', ctx=ast.Load())
-                            ),
-                            ast.keyword(
+                                value=add_location(ast.Name(id='data', ctx=ast.Load()))
+                            )),
+                            add_location(ast.keyword(
                                 arg='format',
-                                value=ast.Constant(value='json', kind=None)
-                            ),
-                            ast.keyword(
+                                value=add_location(ast.Constant(value='json', kind=None))
+                            )),
+                            add_location(ast.keyword(
                                 arg='headers',
-                                value=ast.Attribute(
-                                    value=ast.Name(id='self', ctx=ast.Load()),
+                                value=add_location(ast.Attribute(
+                                    value=add_location(ast.Name(id='self', ctx=ast.Load())),
                                     attr='auth_headers',
                                     ctx=ast.Load()
-                                )
-                            )
+                                ))
+                            ))
                         ]
-                    )
-                ),
-                ast.Expr(
-                    value=ast.Call(
-                        func=ast.Attribute(
-                            value=ast.Name(id='self', ctx=ast.Load()),
+                    ))
+                )),
+                add_location(ast.Expr(
+                    value=add_location(ast.Call(
+                        func=add_location(ast.Attribute(
+                            value=add_location(ast.Name(id='self', ctx=ast.Load())),
                             attr='assertEqual',
                             ctx=ast.Load()
-                        ),
+                        )),
                         args=[
-                            ast.Attribute(
-                                value=ast.Name(id='create_response', ctx=ast.Load()),
+                            add_location(ast.Attribute(
+                                value=add_location(ast.Name(id='create_response', ctx=ast.Load())),
                                 attr='status_code',
                                 ctx=ast.Load()
-                            ),
-                            ast.Attribute(
-                                value=ast.Name(id='status', ctx=ast.Load()),
+                            )),
+                            add_location(ast.Attribute(
+                                value=add_location(ast.Name(id='status', ctx=ast.Load())),
                                 attr='HTTP_201_CREATED',
                                 ctx=ast.Load()
-                            )
+                            ))
                         ],
                         keywords=[]
-                    )
-                ),
-                ast.Assign(
-                    targets=[
-                        ast.Name(id='created_data', ctx=ast.Store())
-                    ],
-                    value=ast.Call(
-                        func=ast.Attribute(
-                            value=ast.Name(id='json', ctx=ast.Load()),
+                    ))
+                )),
+                add_location(ast.Assign(
+                    targets=[add_location(ast.Name(id='created_data', ctx=ast.Store()))],
+                    value=add_location(ast.Call(
+                        func=add_location(ast.Attribute(
+                            value=add_location(ast.Name(id='json', ctx=ast.Load())),
                             attr='loads',
                             ctx=ast.Load()
-                        ),
+                        )),
                         args=[
-                            ast.Attribute(
-                                value=ast.Name(id='create_response', ctx=ast.Load()),
+                            add_location(ast.Attribute(
+                                value=add_location(ast.Name(id='create_response', ctx=ast.Load())),
                                 attr='content',
                                 ctx=ast.Load()
-                            )
+                            ))
                         ],
                         keywords=[]
-                    )
-                ),
-                ast.Expr(
-                    value=ast.Call(
-                        func=ast.Attribute(
-                            value=ast.Name(id='self', ctx=ast.Load()),
+                    ))
+                )),
+                add_location(ast.Expr(
+                    value=add_location(ast.Call(
+                        func=add_location(ast.Attribute(
+                            value=add_location(ast.Name(id='self', ctx=ast.Load())),
                             attr='assertIn',
                             ctx=ast.Load()
-                        ),
+                        )),
                         args=[
-                            ast.Constant(value='id', kind=None),
-                            ast.Name(id='created_data', ctx=ast.Load())
+                            add_location(ast.Constant(value='id', kind=None)),
+                            add_location(ast.Name(id='created_data', ctx=ast.Load()))
                         ],
                         keywords=[]
-                    )
-                ),
-                ast.Assign(
-                    targets=[
-                        ast.Name(id='resource_id', ctx=ast.Store())
-                    ],
-                    value=ast.Subscript(
-                        value=ast.Name(id='created_data', ctx=ast.Load()),
-                        slice=ast.Constant(value='id', kind=None),
+                    ))
+                )),
+                add_location(ast.Assign(
+                    targets=[add_location(ast.Name(id='resource_id', ctx=ast.Store()))],
+                    value=add_location(ast.Subscript(
+                        value=add_location(ast.Name(id='created_data', ctx=ast.Load())),
+                        slice=add_location(ast.Constant(value='id', kind=None)),
                         ctx=ast.Load()
-                    )
-                ),
+                    ))
+                )),
             ])
 
         # 2. Retrieve and verify the resource
@@ -2721,128 +2467,118 @@ class TestCaseGenerator:
                 pk_param = 'id'  # Default if not found
 
             body.extend([
-                ast.Expr(
-                    value=ast.Constant(
+                add_location(ast.Expr(
+                    value=add_location(ast.Constant(
                         value="2. Retrieve the created resource",
                         kind=None
-                    )
-                ),
-                ast.Assign(
-                    targets=[
-                        ast.Name(id='retrieve_url', ctx=ast.Store())
-                    ],
-                    value=ast.BinOp(
-                        left=ast.Attribute(
-                            value=ast.Name(id='self', ctx=ast.Load()),
+                    ))
+                )),
+                add_location(ast.Assign(
+                    targets=[add_location(ast.Name(id='retrieve_url', ctx=ast.Store()))],
+                    value=add_location(ast.BinOp(
+                        left=add_location(ast.Attribute(
+                            value=add_location(ast.Name(id='self', ctx=ast.Load())),
                             attr='api_base',
                             ctx=ast.Load()
-                        ),
-                        op=ast.Add(),
-                        right=ast.Call(
-                            func=ast.Attribute(
-                                value=ast.Constant(
+                        )),
+                        op=add_location(ast.Add()),
+                        right=add_location(ast.Call(
+                            func=add_location(ast.Attribute(
+                                value=add_location(ast.Constant(
                                     value=f"{retrieve_op['path'].replace(f'<{pk_param}>', '{}')}/",
                                     kind=None
-                                ),
+                                )),
                                 attr='format',
                                 ctx=ast.Load()
-                            ),
-                            args=[
-                                ast.Name(id='resource_id', ctx=ast.Load())
-                            ],
+                            )),
+                            args=[add_location(ast.Name(id='resource_id', ctx=ast.Load()))],
                             keywords=[]
-                        )
-                    )
-                ),
-                ast.Assign(
-                    targets=[
-                        ast.Name(id='retrieve_response', ctx=ast.Store())
-                    ],
-                    value=ast.Call(
-                        func=ast.Attribute(
-                            value=ast.Attribute(
-                                value=ast.Name(id='self', ctx=ast.Load()),
+                        ))
+                    ))
+                )),
+                add_location(ast.Assign(
+                    targets=[add_location(ast.Name(id='retrieve_response', ctx=ast.Store()))],
+                    value=add_location(ast.Call(
+                        func=add_location(ast.Attribute(
+                            value=add_location(ast.Attribute(
+                                value=add_location(ast.Name(id='self', ctx=ast.Load())),
                                 attr='client',
                                 ctx=ast.Load()
-                            ),
+                            )),
                             attr='get',
                             ctx=ast.Load()
-                        ),
-                        args=[
-                            ast.Name(id='retrieve_url', ctx=ast.Load())
-                        ],
+                        )),
+                        args=[add_location(ast.Name(id='retrieve_url', ctx=ast.Load()))],
                         keywords=[
-                            ast.keyword(
+                            add_location(ast.keyword(
                                 arg='headers',
-                                value=ast.Attribute(
-                                    value=ast.Name(id='self', ctx=ast.Load()),
+                                value=add_location(ast.Attribute(
+                                    value=add_location(ast.Name(id='self', ctx=ast.Load())),
                                     attr='auth_headers',
                                     ctx=ast.Load()
-                                )
-                            )
+                                ))
+                            ))
                         ]
-                    )
-                ),
-                ast.Expr(
-                    value=ast.Call(
-                        func=ast.Attribute(
-                            value=ast.Name(id='self', ctx=ast.Load()),
+                    ))
+                )),
+                add_location(ast.Expr(
+                    value=add_location(ast.Call(
+                        func=add_location(ast.Attribute(
+                            value=add_location(ast.Name(id='self', ctx=ast.Load())),
                             attr='assertEqual',
                             ctx=ast.Load()
-                        ),
+                        )),
                         args=[
-                            ast.Attribute(
-                                value=ast.Name(id='retrieve_response', ctx=ast.Load()),
+                            add_location(ast.Attribute(
+                                value=add_location(ast.Name(id='retrieve_response', ctx=ast.Load())),
                                 attr='status_code',
                                 ctx=ast.Load()
-                            ),
-                            ast.Attribute(
-                                value=ast.Name(id='status', ctx=ast.Load()),
+                            )),
+                            add_location(ast.Attribute(
+                                value=add_location(ast.Name(id='status', ctx=ast.Load())),
                                 attr='HTTP_200_OK',
                                 ctx=ast.Load()
-                            )
+                            ))
                         ],
                         keywords=[]
-                    )
-                ),
-                ast.Assign(
-                    targets=[
-                        ast.Name(id='retrieved_data', ctx=ast.Store())
-                    ],
-                    value=ast.Call(
-                        func=ast.Attribute(
-                            value=ast.Name(id='json', ctx=ast.Load()),
+                    ))
+                )),
+                add_location(ast.Assign(
+                    targets=[add_location(ast.Name(id='retrieved_data', ctx=ast.Store()))],
+                    value=add_location(ast.Call(
+                        func=add_location(ast.Attribute(
+                            value=add_location(ast.Name(id='json', ctx=ast.Load())),
                             attr='loads',
                             ctx=ast.Load()
-                        ),
+                        )),
                         args=[
-                            ast.Attribute(
-                                value=ast.Name(id='retrieve_response', ctx=ast.Load()),
+                            add_location(ast.Attribute(
+                                value=add_location(ast.Name(id='retrieve_response', ctx=ast.Load())),
                                 attr='content',
                                 ctx=ast.Load()
-                            )
+                            ))
                         ],
                         keywords=[]
-                    )
-                ),
-                ast.Expr(
-                    value=ast.Call(
-                        func=ast.Attribute(
-                            value=ast.Name(id='self', ctx=ast.Load()),
+                    ))
+                )),
+                add_location(ast.Expr(
+                    value=add_location(ast.Call(
+                        func=add_location(ast.Attribute(
+                            value=add_location(ast.Name(id='self', ctx=ast.Load())),
                             attr='assertEqual',
                             ctx=ast.Load()
-                        ),
+                        )),
                         args=[
-                            ast.Subscript(
-                                value=ast.Name(id='retrieved_data', ctx=ast.Load()),
-                                slice=ast.Constant(value='id', kind=None),
+                            add_location(ast.Subscript(
+                                value=add_location(ast.Name(id='retrieved_data', ctx=ast.Load())),
+                                slice=add_location(ast.Constant(value='id', kind=None)),
                                 ctx=ast.Load()
-                            ),
-                            ast.Name(id='resource_id', ctx=ast.Load())
+                            )),
+                            add_location(ast.Name(id='resource_id', ctx=ast.Load()))
                         ],
                         keywords=[]
-                    )
-                ),
+                    ))
+                )),
             ])
 
         # 3. Update the resource
@@ -2856,21 +2592,19 @@ class TestCaseGenerator:
                 pk_param = 'id'  # Default if not found
 
             body.extend([
-                ast.Expr(
-                    value=ast.Constant(
+                add_location(ast.Expr(
+                    value=add_location(ast.Constant(
                         value=f"3. Update the resource using {update_method.upper()}",
                         kind=None
-                    )
-                ),
-                ast.Assign(
-                    targets=[
-                        ast.Name(id='update_data', ctx=ast.Store())
-                    ],
-                    value=ast.Dict(
+                    ))
+                )),
+                add_location(ast.Assign(
+                    targets=[add_location(ast.Name(id='update_data', ctx=ast.Store()))],
+                    value=add_location(ast.Dict(
                         keys=[],
                         values=[]
-                    )
-                ),
+                    ))
+                )),
             ])
 
             # Modify one field for update
@@ -2883,42 +2617,36 @@ class TestCaseGenerator:
                     # Modified value based on type
                     if isinstance(sample_data[key], str):
                         body.append(
-                            ast.Assign(
-                                targets=[
-                                    ast.Subscript(
-                                        value=ast.Name(id='update_data', ctx=ast.Load()),
-                                        slice=ast.Constant(value=key, kind=None),
-                                        ctx=ast.Store()
-                                    )
-                                ],
-                                value=ast.Constant(value=f"Updated {key} value", kind=None)
-                            )
+                            add_location(ast.Assign(
+                                targets=[add_location(ast.Subscript(
+                                    value=add_location(ast.Name(id='update_data', ctx=ast.Load())),
+                                    slice=add_location(ast.Constant(value=key, kind=None)),
+                                    ctx=ast.Store()
+                                ))],
+                                value=add_location(ast.Constant(value=f"Updated {key} value", kind=None))
+                            ))
                         )
                     elif isinstance(sample_data[key], (int, float)):
                         body.append(
-                            ast.Assign(
-                                targets=[
-                                    ast.Subscript(
-                                        value=ast.Name(id='update_data', ctx=ast.Load()),
-                                        slice=ast.Constant(value=key, kind=None),
-                                        ctx=ast.Store()
-                                    )
-                                ],
-                                value=ast.Constant(value=42, kind=None)
-                            )
+                            add_location(ast.Assign(
+                                targets=[add_location(ast.Subscript(
+                                    value=add_location(ast.Name(id='update_data', ctx=ast.Load())),
+                                    slice=add_location(ast.Constant(value=key, kind=None)),
+                                    ctx=ast.Store()
+                                ))],
+                                value=add_location(ast.Constant(value=42, kind=None))
+                            ))
                         )
                     elif isinstance(sample_data[key], bool):
                         body.append(
-                            ast.Assign(
-                                targets=[
-                                    ast.Subscript(
-                                        value=ast.Name(id='update_data', ctx=ast.Load()),
-                                        slice=ast.Constant(value=key, kind=None),
-                                        ctx=ast.Store()
-                                    )
-                                ],
-                                value=ast.Constant(value=not sample_data[key], kind=None)
-                            )
+                            add_location(ast.Assign(
+                                targets=[add_location(ast.Subscript(
+                                    value=add_location(ast.Name(id='update_data', ctx=ast.Load())),
+                                    slice=add_location(ast.Constant(value=key, kind=None)),
+                                    ctx=ast.Store()
+                                ))],
+                                value=add_location(ast.Constant(value=not sample_data[key], kind=None))
+                            ))
                         )
                     # Break after finding the first suitable field
                     break
@@ -2927,16 +2655,14 @@ class TestCaseGenerator:
             if not modified_field:
                 modified_field = 'test_field'
                 body.append(
-                    ast.Assign(
-                        targets=[
-                            ast.Subscript(
-                                value=ast.Name(id='update_data', ctx=ast.Load()),
-                                slice=ast.Constant(value=modified_field, kind=None),
-                                ctx=ast.Store()
-                            )
-                        ],
-                        value=ast.Constant(value='test_value', kind=None)
-                    )
+                    add_location(ast.Assign(
+                        targets=[add_location(ast.Subscript(
+                            value=add_location(ast.Name(id='update_data', ctx=ast.Load())),
+                            slice=add_location(ast.Constant(value=modified_field, kind=None)),
+                            ctx=ast.Store()
+                        ))],
+                        value=add_location(ast.Constant(value='test_value', kind=None))
+                    ))
                 )
 
             body.extend([
@@ -3308,75 +3034,55 @@ class TestCaseGenerator:
 
     def generate_testcase_class(self, resource_name: str, crud_ops: Dict) -> ast.ClassDef:
         """
-        Generate a test case class for a resource.
+        Generate a Django TestCase class for the given resource.
 
         Args:
-            resource_name: Name of the resource
-            crud_ops: CRUD operations for the resource
+            resource_name: The name of the resource
+            crud_ops: The CRUD operations for the resource
 
         Returns:
-            An AST ClassDef node for the test case class
+            An AST ClassDef node
         """
-        operations = crud_ops['operations']
+        # 1. Create class methods
+        methods = []
 
-        # Create class body with setup and teardown methods
-        body = [
-            self._create_setup_method(resource_name),
-            self._create_teardown_method()
-        ]
+        # Add setup and teardown methods
+        setup_method = self._create_setup_method(resource_name)
+        teardown_method = self._create_teardown_method()
+        methods.extend([setup_method, teardown_method])
 
-        # Add individual test methods for each operation
-        resources = self.endpoint_analyzer.identify_resources_from_tags()
-        resource_ops = resources.get(resource_name, {})
+        # Create test methods for each CRUD operation
+        for op_type in ['create', 'list', 'retrieve', 'update', 'delete']:
+            if op_type in crud_ops:
+                method_creator = getattr(self, f'_create_test_{op_type}_method')
+                args = [resource_name, crud_ops[op_type]]
 
-        # Add CRUD cycle test first (if applicable)
-        crud_test = self._create_test_crud_method(resource_name, crud_ops)
-        if crud_test:
-            body.append(crud_test)
+                # Include related operations for methods that need them
+                if op_type in ['retrieve', 'update', 'delete'] and 'create' in crud_ops:
+                    args.append(crud_ops['create'])
+                if op_type in ['update', 'delete'] and 'retrieve' in crud_ops:
+                    args.append(crud_ops['retrieve'])
 
-        # Add individual operation tests
-        if operations['list'] and operations['list'] in resource_ops:
-            op_details = resource_ops[operations['list']]
-            body.append(self._create_test_list_method(resource_name, op_details))
+                test_method = method_creator(*args)
+                methods.append(test_method)
 
-        if operations['create'] and operations['create'] in resource_ops:
-            op_details = resource_ops[operations['create']]
-            retrieve_op = resource_ops.get(operations['retrieve']) if operations['retrieve'] else None
-            body.append(self._create_test_create_method(resource_name, op_details, retrieve_op))
+        # Add a full CRUD test if all operations are available
+        if set(crud_ops.keys()) >= {'create', 'retrieve', 'update', 'delete'}:
+            crud_method = self._create_test_crud_method(resource_name, crud_ops)
+            if crud_method:
+                methods.append(crud_method)
 
-        if operations['retrieve'] and operations['retrieve'] in resource_ops:
-            op_details = resource_ops[operations['retrieve']]
-            create_op = resource_ops.get(operations['create']) if operations['create'] else None
-            body.append(self._create_test_retrieve_method(resource_name, op_details, create_op))
-
-        if operations['update'] and operations['update'] in resource_ops:
-            op_details = resource_ops[operations['update']]
-            create_op = resource_ops.get(operations['create']) if operations['create'] else None
-            retrieve_op = resource_ops.get(operations['retrieve']) if operations['retrieve'] else None
-            body.append(self._create_test_update_method(resource_name, op_details, create_op, retrieve_op))
-
-        if operations['patch'] and operations['patch'] in resource_ops:
-            op_details = resource_ops[operations['patch']]
-            create_op = resource_ops.get(operations['create']) if operations['create'] else None
-            retrieve_op = resource_ops.get(operations['retrieve']) if operations['retrieve'] else None
-            body.append(self._create_test_update_method(resource_name, op_details, create_op, retrieve_op))
-
-        if operations['delete'] and operations['delete'] in resource_ops:
-            op_details = resource_ops[operations['delete']]
-            create_op = resource_ops.get(operations['create']) if operations['create'] else None
-            retrieve_op = resource_ops.get(operations['retrieve']) if operations['retrieve'] else None
-            body.append(self._create_test_delete_method(resource_name, op_details, create_op, retrieve_op))
-
-        # Create the class definition
-        return ast.ClassDef(
-            name=f'{resource_name.title()}ApiTests',
-            bases=[
-                ast.Name(id='TestCase', ctx=ast.Load())
-            ],
+        # 2. Create the class definition
+        class_name = f"{resource_name.title()}ApiTests"
+        class_def = add_location(ast.ClassDef(
+            name=class_name,
+            bases=[_create_name('APITestCase')],
             keywords=[],
-            body=body,
+            body=methods,
             decorator_list=[]
-        )
+        ))
+
+        return class_def
 
     def generate_test_file(self, output_path: Optional[str] = None) -> str:
         """
@@ -3389,10 +3095,10 @@ class TestCaseGenerator:
             The generated Python code as a string
         """
         # Create the AST module
-        module = ast.Module(
+        module = add_location(ast.Module(
             body=self._create_import_statements(),
             type_ignores=[]
-        )
+        ))
 
         # Add test classes for each resource
         crud_groups = self.endpoint_analyzer.identify_crud_groups()
@@ -3401,13 +3107,15 @@ class TestCaseGenerator:
             test_class = self.generate_testcase_class(resource_name, crud_ops)
             module.body.append(test_class)
 
-        # Generate code from the AST
-        code = astor.to_source(module)
+        # Generate code from the AST using ast.unparse (Python 3.9+)
+        code = ast.unparse(module)
 
         # Write to file if path is provided
         if output_path:
+            formatted_code = format_python_code_using_black(output_path, code)
             with open(output_path, 'w') as f:
-                f.write(format_python_code_using_black(output_path, code))
+                f.write(formatted_code)
+            return formatted_code
 
         return code
 
