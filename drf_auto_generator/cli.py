@@ -11,7 +11,7 @@ from drf_auto_generator.introspection_django import (
 )
 
 # Keep other necessary imports
-from drf_auto_generator.config import load_config
+from drf_auto_generator.config_validation import load_config
 from drf_auto_generator.mapper import build_intermediate_representation
 from drf_auto_generator.openapi_gen import generate_openapi_spec, save_openapi_spec
 

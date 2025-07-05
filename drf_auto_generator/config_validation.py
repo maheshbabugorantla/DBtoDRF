@@ -1,9 +1,12 @@
 # File: drf_auto_generator/validation.py
-from argparse import ArgumentParser, Namespace
+from argparse import Namespace
 import sys
 import logging
 import keyword
 from typing import List, Optional, Dict, Any, Literal, Self
+import yaml
+import os
+from pathlib import Path
 
 from pydantic import (
     BaseModel,
@@ -45,6 +48,18 @@ class DatabaseSettings(BaseModel):
     OPTIONS: Dict[str, Any] = Field(
         default_factory=dict, description="Database engine specific options."
     )  # Use default_factory
+
+    def __getitem__(self, key: str) -> Any:
+        return getattr(self, key)
+
+    @field_validator("ENGINE")
+    @classmethod
+    def validate_engine(cls, v: str) -> str:
+        """Ensure engine is a valid Django database engine."""
+        supported_db_engines = ['django.db.backends.postgresql', 'django.db.backends.sqlite3']
+        if v not in supported_db_engines:
+            raise ValueError(f"Database engine: {v} is not supported. Supported engines are: {', '.join(supported_db_engines)}")
+        return v
 
     # --- Use @field_validator for PORT ---
     @field_validator(
@@ -141,6 +156,14 @@ class ToolConfigSchema(BaseModel):
     SECRET_KEY: Optional[str] = Field(
         default=None, description="Internal secret key for Django setup."
     )
+
+    def __getitem__(self, key: str) -> Any:
+        """Allow dictionary-style access for compatibility with existing code."""
+        return getattr(self, key)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        """Allow dict.get() style access for compatibility with existing code."""
+        return getattr(self, key, default)
 
     # --- Custom Field Validators using @field_validator ---
 
@@ -274,15 +297,57 @@ def load_config(config_path: Optional[str], cli_args: Namespace) -> ToolConfigSc
     validates the result, and returns a validated Pydantic model instance.
     Exits with error messages if validation fails.
     """
-    raw_config: Dict[str, Any] = {}
-    # ... (Code to load YAML into raw_config) ...
-    # ... (Code to merge CLI args into raw_config) ...
-    # ... (Code to add default SECRET_KEY if needed) ...
+    raw_config: Dict[str, Any] = {}  # Start with empty raw config
 
-    # Validate using the new function which uses Pydantic V2 style
+    # 1. Load from YAML file if path is provided
+    if config_path:
+        try:
+            config_file = Path(config_path)
+            if config_file.is_file():
+                with open(config_file, "r", encoding="utf-8") as f:
+                    yaml_config = yaml.safe_load(f)
+                    if yaml_config and isinstance(yaml_config, dict):
+                        raw_config.update(yaml_config)
+                        logger.debug(f"Loaded configuration from {config_path}")
+                    elif yaml_config:
+                        logger.warning(
+                            f"Content in config file {config_path} is not a dictionary. Ignoring file content."
+                        )
+            else:
+                logger.warning(
+                    f"Config file not found at {config_path}. Using defaults and CLI arguments."
+                )
+        except yaml.YAMLError as e:
+            logger.error(f"Error parsing YAML file {config_path}: {e}")
+            logger.warning("Proceeding with defaults and CLI arguments only.")
+        except Exception as e:
+            logger.error(f"Error reading config file {config_path}: {e}")
+            logger.warning("Proceeding with defaults and CLI arguments only.")
+
+    # 2. Override with CLI arguments (only those explicitly provided)
+    cli_dict = vars(cli_args)
+    overridden_keys = set()
+    for key, value in cli_dict.items():
+        # Only override if the CLI arg was actually given (is not None)
+        # And don't override 'databases' via simple CLI args for now
+        if (
+            value is not None and key != "databases" and hasattr(ToolConfigSchema, key)
+        ):  # Check if it's a valid config key
+            raw_config[key] = value
+            overridden_keys.add(key)
+    if overridden_keys:
+        logger.debug(f"Overridden config keys from CLI arguments: {overridden_keys}")
+
+    # 3. Add internal SECRET_KEY if not present (needed for django.setup)
+    if "SECRET_KEY" not in raw_config:
+        raw_config["SECRET_KEY"] = os.urandom(50).hex()
+
+    # 4. Validate using the function which uses Pydantic V2 style
+    logger.info("Validating final configuration...")
     validated_config: ToolConfigSchema = validate_and_parse_config(raw_config)
 
-    # Post-validation adjustments
+    # 5. Perform any post-validation adjustments (like resolving paths)
     validated_config.output_dir = str(Path(validated_config.output_dir).resolve())
+
     logger.info("Configuration loaded and validated successfully.")
     return validated_config
