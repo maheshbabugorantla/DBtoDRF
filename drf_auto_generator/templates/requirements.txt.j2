@@ -7,22 +7,22 @@
 # You may need to add other specific dependencies based on your project's needs.
 #
 
-django >= 4.0
-djangorestframework >= 3.13
-drf-spectacular >= 0.24
+django >= 5.2
+djangorestframework >= 3.16.0
+drf-spectacular >= 0.28.0
 
 # --- Database Driver (Detected from config) ---
 {% set db_engine = config.databases.default.ENGINE | lower %}
 {% if 'postgresql' in db_engine %}
 # For PostgreSQL:
-psycopg2-binary >= 2.9
+psycopg2-binary >= 2.9.10
 {% elif 'mysql' in db_engine %}
 # For MySQL/MariaDB:
-mysqlclient >= 2.1
+mysqlclient >= 2.2.3
 {% elif 'mssql' in db_engine %}
 # For SQL Server (check compatibility with your Django/Python versions):
-django-mssql-backend >= 1.0
-pyodbc >= 4.0
+django-mssql-backend >= 1.1.0
+pyodbc >= 5.1.0
 {% else %}
 # WARNING: Unknown database engine '{{ config.databases.default.ENGINE }}'.
 # Please add the required Python database driver package manually below.
@@ -30,28 +30,26 @@ pyodbc >= 4.0
 {% endif %}
 
 # --- Optional Common Additions ---
-python-dotenv >= 0.19       # For loading environment variables from .env file
-ipython                     # For interactive shell
-# django-environ >= 0.8    # Alternative for managing settings via environment
-# django-filter >= 21.1    # For advanced filtering in DRF views
-# djangorestframework-simplejwt >= 5.0 # For JWT authentication
-# django-cors-headers >= 3.10 # For handling Cross-Origin Resource Sharing
+python-dotenv >= 0.24.0                # For loading environment variables from .env file
+ipython >= 8.17.0                      # For interactive shell
+django-environ >= 0.11.2               # Alternative for managing settings via environment
+django-filter >= 23.2                  # For advanced filtering in DRF views
+djangorestframework-simplejwt >= 5.0 # For JWT authentication
+django-cors-headers >= 4.6.0           # For handling Cross-Origin Resource Sharing
+# --- Testing Dependencies ---
+schemathesis >= 3.19.0           # Property-based API testing
+hypothesis >= 6.82.0             # Required by schemathesis for property-based testing
+requests >= 2.31.0               # HTTP library for API testing
+
 # --- WSGI Server ---
 # Included as WSGI deployment is assumed for now.
-gunicorn >= 20.1    # WSGI HTTP Server for UNIX
+gunicorn >= 23.0.0    # WSGI HTTP Server for UNIX
 
 {#
 # --- ASGI Server ---
 # Included as ASGI deployment is assumed for now.
 uvicorn >= 0.15     # ASGI server for production deployment
 #}
-
-# --- Optional Common Additions ---
-django-filter >= 21.1    # For advanced filtering in DRF views
-python-dotenv >= 0.19    # For loading environment variables from .env file
-django-environ >= 0.8    # Alternative for managing settings via environment
-django-cors-headers >= 3.10 # For handling Cross-Origin Resource Sharing
-djangorestframework-simplejwt >= 5.0 # For JWT authentication
 
 {% if config.add_whitenoise %}
 # --- Whitenoise (Serves static files, place high but after Security) ---
