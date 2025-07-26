@@ -1,68 +1,47 @@
+"""
+Database introspection module for DRF Auto Generator.
+
+This module provides Django-based database introspection functionality using
+Django's built-in database introspection capabilities. It generates domain models
+from database schema information.
+
+The introspection process:
+1. Configures Django with database settings
+2. Uses Django's introspection API to examine database schema
+3. Converts raw database information to domain models
+4. Analyzes relationships, constraints, and indexes
+"""
+
 import logging
 import django
 from django.db import connections, DEFAULT_DB_ALIAS
 from django.conf import settings
 from django.db.backends.postgresql.introspection import DatabaseIntrospection
 from typing import List, Optional, Dict, Any, Set, Tuple
-from dataclasses import dataclass, field
 
-
-# --- Data Structures for Introspection Results ---
-@dataclass
-class ColumnInfo:
-    """Holds information about a single database column."""
-
-    name: str
-    db_type_string: str  # Raw DB type string/code from Django introspection
-    internal_size: Optional[int]
-    precision: Optional[int]
-    scale: Optional[int]
-    nullable: bool
-    default: Optional[str]  # Django introspection default handling varies
-    collation: Optional[str]
-    is_pk: bool = False
-    is_unique: bool = False  # Derived later from constraints
-    is_foreign_key: bool = False  # Derived later from relations/constraints
-    foreign_key_to: Optional[Tuple[str, str]] = None  # (target_table, target_column)
-    enum_values: Optional[List[str]] = None  # Store enum values if applicable
-
-
-@dataclass
-class TableInfo:
-    """Holds information about a single database table and its mapped structure."""
-
-    name: str  # Original database table name
-    columns: List[ColumnInfo] = field(default_factory=list)
-    primary_key_columns: List[str] = field(default_factory=list)
-    # Store raw constraints/relations as returned by Django's API
-    constraints: Dict[str, Dict[str, Any]] = field(default_factory=dict)
-    relations: Dict[str, Dict[str, Any]] = field(default_factory=dict)
-    # --- Fields added by Mapper ---
-    model_name: str = ""  # Mapped PascalCase Django model name
-    fields: List[Dict[str, Any]] = field(
-        default_factory=list
-    )  # Mapped Django field definitions
-    relationships: List[Dict[str, Any]] = field(
-        default_factory=list
-    )  # Mapped relationship definitions
-    unique_together: List[List[str]] = field(
-        default_factory=list
-    )  # For Meta.unique_together
-    meta_constraints: List[Dict[str, Any]] = field(
-        default_factory=list
-    )  # For UniqueConstraint, CheckConstraint etc.
-    meta_indexes: List[Dict[str, Any]] = field(default_factory=list)  # For Index
-    db_check_constraints: List[Dict[str, Any]] = field(
-        default_factory=list
-    )  # To note unhandled checks
-    # --- Additional fields for M2M relationships ---
-    is_m2m_through_table: bool = False
-    skip_detailed_processing: bool = False
+# Import domain models instead of defining local ones
+from drf_auto_generator.domain.models import TableInfo, ColumnInfo, ConstraintInfo
 
 
 # --- Logging Setup ---
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
+
+
+def _map_constraint_type(constraint_data: Dict[str, Any]) -> str:
+    """Map Django constraint data to domain constraint type."""
+    if constraint_data.get('primary_key'):
+        return 'primary_key'
+    elif constraint_data.get('unique'):
+        return 'unique'
+    elif constraint_data.get('foreign_key'):
+        return 'foreign_key'
+    elif constraint_data.get('check'):
+        return 'check'
+    elif constraint_data.get('index'):
+        return 'index'
+    else:
+        return 'unknown'
 
 # --- Django Setup Helper ---
 _django_setup_done = False
@@ -324,6 +303,7 @@ def introspect_schema_django(
                     # Get field type and enum values (if applicable)
                     field_type = introspector.get_field_type(description.type_code, description)
 
+                    # Create domain ColumnInfo with proper field type inference
                     col_info = ColumnInfo(
                         name=col_name,
                         db_type_string=field_type,
@@ -378,13 +358,28 @@ def introspect_schema_django(
                         col.is_foreign_key = True
                         col.foreign_key_to = fk_column_map[col.name]
 
-                # --- Create TableInfo ---
+                # --- Create Domain TableInfo ---
+                # Convert raw constraints to domain constraint models if needed
+                constraint_infos = []
+                for constraint_name, constraint_data in constraints.items():
+                    constraint_info = ConstraintInfo(
+                        name=constraint_name,
+                        constraint_type=_map_constraint_type(constraint_data),
+                        columns=constraint_data.get('columns', []),
+                        definition=constraint_data.get('definition'),
+                        is_deferrable=constraint_data.get('is_deferrable', False),
+                        initially_deferred=constraint_data.get('initially_deferred', False)
+                    )
+                    constraint_infos.append(constraint_info)
+
                 table_info = TableInfo(
                     name=table_name,
                     columns=columns_info,
                     primary_key_columns=final_pk_columns,
-                    constraints=constraints,  # Store raw constraints for potential use in mapper
-                    relations=relations,  # Store raw relations
+                    constraints=constraint_infos,
+                    # Store raw data for backward compatibility during transition
+                    raw_constraints=constraints,
+                    raw_relations=relations,
                 )
                 all_tables_info.append(table_info)
                 processed_tables.add(table_name)
