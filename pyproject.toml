@@ -72,3 +72,9 @@ dev = [
     "python-dotenv",
     "Faker",
 ]
+
+[dependency-groups]
+dev = [
+    "ipython>=8.36.0",
+    "pdbpp>=0.11.6",
+]
