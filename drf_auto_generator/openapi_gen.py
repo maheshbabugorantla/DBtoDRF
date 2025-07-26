@@ -5,12 +5,27 @@ from typing import List, Dict, Any
 import inflect
 
 # Import from the new Django introspection module
-from .introspection_django import TableInfo
-from .mapper import clean_field_name
+from drf_auto_generator.domain.models import TableInfo
+from drf_auto_generator.mapper import clean_field_name
 
 
 logger = logging.getLogger(__name__)
 p = inflect.engine()
+
+
+def _get_target_model_name(rel_info: Dict[str, Any]) -> str:
+    """
+    Safely extract target_model_name from relationship info.
+    If target_model_name is missing, derive it from target_table.
+    """
+    if "target_model_name" in rel_info:
+        return rel_info["target_model_name"]
+
+    # Fallback: derive model name from target_table
+    target_table = rel_info.get("target_table", "UnknownTable")
+    # Convert snake_case to PascalCase
+    words = target_table.split('_')
+    return ''.join(word.capitalize() for word in words)
 
 
 def generate_openapi_schema_object(
@@ -54,7 +69,7 @@ def generate_openapi_schema_object(
     for rel_info in table.relationships:
         rel_name = rel_info["name"]
         rel_type = rel_info["type"]  # 'many-to-one', 'one-to-many', 'many-to-many'
-        target_model_name = rel_info["target_model_name"]
+        target_model_name = _get_target_model_name(rel_info)
 
         if rel_type == "many-to-one":
             if relation_style == "pk":
@@ -444,7 +459,7 @@ def generate_m2m_endpoints(
 
     for relation in m2m_relationships:
         rel_name = relation["name"]
-        target_model = relation["target_model_name"]
+        target_model = _get_target_model_name(relation)
 
         # Create endpoints for managing the M2M relationship
         # 1. List related items

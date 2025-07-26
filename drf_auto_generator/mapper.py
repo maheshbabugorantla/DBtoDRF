@@ -1,192 +1,54 @@
+"""
+Field mapping and naming utilities for DRF Auto Generator.
+
+This module provides comprehensive field mapping functionality for converting
+database schema information into Django model fields, DRF serializer fields,
+and OpenAPI schema definitions. It handles naming conventions, field type
+mappings, and relationship inference.
+
+Key Components:
+- Field type mapping from database types to Django field types
+- Naming convention utilities (snake_case, PascalCase, etc.)
+- Relationship analysis and mapping
+- OpenAPI schema generation for fields
+- DRF serializer field mapping
+
+Example:
+    >>> from .mapper import FieldMapper
+    >>> mapper = FieldMapper()
+    >>> django_field = mapper.map_django_field(column_info)
+    >>> openapi_schema = mapper.map_openapi_field(column_info)
+"""
+
 import logging
-import re
 from typing import List, Dict, Any, Tuple
 import inflect
 
-# Import from the new Django introspection module
-from .introspection_django import TableInfo, ColumnInfo
+# Import domain models and services
+from drf_auto_generator.domain.models import TableInfo, ColumnInfo
+from drf_auto_generator.domain.field_mapping import FieldMapper as DomainFieldMapper
+from drf_auto_generator.domain.relationships import RelationshipAnalyzer
+from drf_auto_generator.domain.constraints import ConstraintAnalyzer
+from drf_auto_generator.constants import (
+    DjangoFieldTypes, DJANGO_FIELD_MAP, OPENAPI_TYPE_MAP,
+    FieldCategories, RelationshipDefaults
+)
+from drf_auto_generator.domain.naming import NamingConventions, clean_field_name, to_pascal_case
+
+# Initialize inflect engine for pluralization
+p = inflect.engine()
 
 
 logger = logging.getLogger(__name__)
-p = inflect.engine()  # For pluralization/singularization
 
 
-# --- Naming Convention Helpers ---
-def to_snake_case(name: str) -> str:
-    """Converts CamelCase or PascalCase to snake_case."""
-    name = re.sub("(.)([A-Z][a-z]+)", r"\1_\2", name)
-    name = re.sub("__([A-Z])", r"_\1", name)
-    name = re.sub("([a-z0-9])([A-Z])", r"\1_\2", name)
-    return name.lower()
+# --- Legacy naming helpers (moved to domain/naming.py) ---
+# These are imported above for backward compatibility
 
 
-def to_pascal_case(name: str) -> str:
-    """Converts snake_case to PascalCase (ClassName)."""
-    # Try to singularize table names for model names
-    singular_name = p.singular_noun(name)
-    if singular_name is False:  # inflect returns False if already singular or irregular
-        singular_name = name
-    # Handle cases like 'data' -> 'Data', 'series' -> 'Series' where singular is same
-    if not singular_name:
-        singular_name = name
-
-    return "".join(word.capitalize() for word in singular_name.split("_"))
-
-
-def clean_field_name(name: str) -> str:
-    """Ensures field name is a valid Python identifier and not a keyword."""
-    name = to_snake_case(name)
-    # Remove invalid characters (allow underscore)
-    name = re.sub(r"[^a-zA-Z0-9_]", "", name)
-    # Ensure it starts with a letter or underscore
-    if name and not name[0].isalpha() and name[0] != "_":
-        name = "_" + name
-    # Handle Python keywords
-    # List from: import keyword; keyword.kwlist
-    keywords = {
-        "False",
-        "None",
-        "True",
-        "and",
-        "as",
-        "assert",
-        "async",
-        "await",
-        "break",
-        "class",
-        "continue",
-        "def",
-        "del",
-        "elif",
-        "else",
-        "except",
-        "finally",
-        "for",
-        "from",
-        "global",
-        "if",
-        "import",
-        "in",
-        "is",
-        "lambda",
-        "nonlocal",
-        "not",
-        "or",
-        "pass",
-        "raise",
-        "return",
-        "try",
-        "while",
-        "with",
-        "yield",
-    }
-    if name in keywords:
-        name += "_"
-    # Handle potential clash with 'pk' if the column name wasn't originally 'pk'
-    if name == "pk" and name != "pk":
-        name = "pk_val"  # Or another suitable suffix
-    return name if name else "_field"  # Ensure non-empty name
-
-
-# --- Type Mapping Dictionaries ---
-
-# Maps type strings returned by Django introspection's get_field_type() to Django model fields.
-# This is HIGHLY backend-dependent and needs extensive testing/refinement.
-# Inspired by django.core.management.commands.inspectdb.Command.data_types_reverse
-# Use simple strings first, can refine with more specific types later.
-DJANGO_FIELD_MAP = {
-    # Generic Types (might be returned by get_field_type)
-    "AutoField": "AutoField",
-    "BigAutoField": "BigAutoField",
-    "SmallAutoField": "SmallAutoField",
-    "BooleanField": "BooleanField",
-    "CharField": "CharField",
-    "DateField": "DateField",
-    "DateTimeField": "DateTimeField",
-    "DecimalField": "DecimalField",
-    "DurationField": "DurationField",
-    "EmailField": "EmailField",
-    "FileField": "FileField",
-    "FilePathField": "FilePathField",
-    "FloatField": "FloatField",
-    "GenericIPAddressField": "GenericIPAddressField",
-    "ImageField": "ImageField",
-    "IntegerField": "IntegerField",
-    "BigIntegerField": "BigIntegerField",
-    "SmallIntegerField": "SmallIntegerField",
-    "JSONField": "JSONField",
-    "PositiveBigIntegerField": "PositiveBigIntegerField",
-    "PositiveIntegerField": "PositiveIntegerField",
-    "PositiveSmallIntegerField": "PositiveSmallIntegerField",
-    "SlugField": "SlugField",
-    "TextField": "TextField",
-    "TimeField": "TimeField",
-    "URLField": "URLField",
-    "UUIDField": "UUIDField",
-    "BinaryField": "BinaryField",
-    # Add more specific backend types if needed, e.g.:
-    # 'geometry': 'django.contrib.gis.db.models.GeometryField', # If using PostGIS
-    # 'jsonb': 'JSONField', # PostgreSQL JSONB often maps to JSONField
-    # 'varchar': 'CharField', # Explicit mapping if needed
-    # 'int': 'IntegerField',
-}
-
-
-# Maps Django Model Field types (or common DB types) to OpenAPI schema types/formats.
-OPENAPI_TYPE_MAP = {
-    "AutoField": {"type": "integer", "readOnly": True},
-    "BigAutoField": {"type": "integer", "format": "int64", "readOnly": True},
-    "SmallAutoField": {"type": "integer", "readOnly": True},
-    "IntegerField": {"type": "integer"},
-    "BigIntegerField": {"type": "integer", "format": "int64"},
-    "SmallIntegerField": {"type": "integer"},
-    "PositiveIntegerField": {"type": "integer", "minimum": 0},
-    "PositiveBigIntegerField": {"type": "integer", "format": "int64", "minimum": 0},
-    "PositiveSmallIntegerField": {"type": "integer", "minimum": 0},
-    "BooleanField": {"type": "boolean"},
-    "FloatField": {"type": "number", "format": "float"},
-    "DecimalField": {
-        "type": "number",
-        "format": "double",
-    },  # Or use 'string' for exact precision
-    "CharField": {"type": "string"},
-    "TextField": {"type": "string"},
-    "EmailField": {"type": "string", "format": "email"},
-    "SlugField": {"type": "string", "pattern": r"^[-a-zA-Z0-9_]+$"},
-    "URLField": {"type": "string", "format": "uri"},
-    "UUIDField": {"type": "string", "format": "uuid"},
-    "DateField": {"type": "string", "format": "date"},
-    "DateTimeField": {"type": "string", "format": "date-time"},
-    "TimeField": {
-        "type": "string",
-        "format": "time",
-    },  # Custom format, OpenAPI standard is date-time
-    "DurationField": {
-        "type": "string",
-        "format": "duration",
-    },  # ISO 8601 duration format
-    "JSONField": {
-        "type": "object",
-        "additionalProperties": True,
-    },  # Allows any JSON structure
-    "BinaryField": {"type": "string", "format": "byte"},  # Base64 encoded string
-    "FileField": {
-        "type": "string",
-        "format": "uri",
-        "readOnly": True,
-    },  # Often represented as URL
-    "ImageField": {
-        "type": "string",
-        "format": "uri",
-        "readOnly": True,
-    },  # Often represented as URL
-    "GenericIPAddressField": {
-        "type": "string",
-        "format": "ipv4 or ipv6",
-    },  # Clarify format
-    # Default fallback
-    "Unknown": {"type": "string", "description": "Type mapping fallback."},
-}
+# --- Legacy Type Mapping Functions ---
+# These functions are kept for backward compatibility with existing code.
+# New code should use domain services instead.
 
 
 # --- Mapping Functions ---
@@ -196,7 +58,7 @@ def map_db_type_to_django(col: ColumnInfo, table_info: TableInfo = None) -> Tupl
     """Maps DB type string (from Django introspection) to Django model field type and options."""
 
     # 1. Get the base Django field type from mapping
-    field_type = DJANGO_FIELD_MAP.get(col.db_type_string, "TextField")
+    field_type = DJANGO_FIELD_MAP.get(col.db_type_string, DjangoFieldTypes.TEXT_FIELD)
 
     # 2. Base Options from ColumnInfo attributes
     options: Dict[str, Any] = {}
@@ -208,11 +70,11 @@ def map_db_type_to_django(col: ColumnInfo, table_info: TableInfo = None) -> Tupl
         options["unique"] = True
 
     # Size-related options for specific types
-    if field_type in ("CharField", "TextField") and col.internal_size:
+    if field_type in (DjangoFieldTypes.CHAR_FIELD, DjangoFieldTypes.TEXT_FIELD) and col.internal_size:
         # Note: If internal_size is -1 or very large, maybe skip max_length
         if col.internal_size > 0:
             options["max_length"] = col.internal_size
-    elif field_type == "DecimalField":
+    elif field_type == DjangoFieldTypes.DECIMAL_FIELD:
         options["max_digits"] = col.precision or 10  # Default fallback
         options["decimal_places"] = col.scale or 0
 
@@ -227,13 +89,13 @@ def map_db_type_to_django(col: ColumnInfo, table_info: TableInfo = None) -> Tupl
             # Keep the original field type (IntegerField, DateTimeField, etc.)
 
             # If Django introspection already converted this to AutoField, we need to convert it back
-            if field_type in ("AutoField", "BigAutoField", "SmallAutoField"):
-                if field_type == "BigAutoField":
-                    field_type = "BigIntegerField"
-                elif field_type == "SmallAutoField":
-                    field_type = "SmallIntegerField"
+            if field_type in (DjangoFieldTypes.AUTO_FIELD, DjangoFieldTypes.BIG_AUTO_FIELD, DjangoFieldTypes.SMALL_AUTO_FIELD):
+                if field_type == DjangoFieldTypes.BIG_AUTO_FIELD:
+                    field_type = DjangoFieldTypes.BIG_INTEGER_FIELD
+                elif field_type == DjangoFieldTypes.SMALL_AUTO_FIELD:
+                    field_type = DjangoFieldTypes.SMALL_INTEGER_FIELD
                 else:  # AutoField
-                    field_type = "IntegerField"
+                    field_type = DjangoFieldTypes.INTEGER_FIELD
                 logger.debug(f"Column {col.name} is part of composite PK, converting {col.db_type_string} from AutoField back to {field_type}")
 
             options.pop("primary_key", None)  # Don't mark individual fields as primary_key=True
@@ -241,20 +103,16 @@ def map_db_type_to_django(col: ColumnInfo, table_info: TableInfo = None) -> Tupl
             # Do NOT convert to AutoField for composite primary keys
         else:
             # Single primary key - check if it looks like an auto-incrementing integer PK
-            is_standard_int_pk = field_type in (
-                "IntegerField",
-                "BigIntegerField",
-                "SmallIntegerField",
-            )
+            is_standard_int_pk = field_type in FieldCategories.INTEGER_TYPES
             # `inspectdb` has complex logic checking sequences/defaults. We simplify:
             # Assume integer PKs are auto-incrementing unless specified otherwise.
             if is_standard_int_pk:
                 if "Big" in field_type:
-                    field_type = "BigAutoField"
+                    field_type = DjangoFieldTypes.BIG_AUTO_FIELD
                 elif "Small" in field_type:
-                    field_type = "SmallAutoField"
+                    field_type = DjangoFieldTypes.SMALL_AUTO_FIELD
                 else:
-                    field_type = "AutoField"
+                    field_type = DjangoFieldTypes.AUTO_FIELD
                 options.pop(
                     "primary_key", None
                 )  # AutoFields have implicit primary_key=True
@@ -268,26 +126,20 @@ def map_db_type_to_django(col: ColumnInfo, table_info: TableInfo = None) -> Tupl
     # Handle Nullability & Blank
     options["null"] = col.nullable
     # Django convention: Char/Text fields usually use blank=True instead of null=True
-    if col.nullable and field_type in (
-        "CharField",
-        "TextField",
-        "EmailField",
-        "URLField",
-        "SlugField",
-    ):
+    if col.nullable and field_type in FieldCategories.TEXT_TYPES:
         options["blank"] = True
         # Keep null=True if the DB explicitly allows NULL, for consistency? Or remove it?
         # Django practice leans towards blank=True, null=False for string fields. Let's try that.
         # options['null'] = False # Overwrite null for these types if nullable? Risky.
     elif not col.nullable and field_type not in (
-        "BooleanField",
+        DjangoFieldTypes.BOOLEAN_FIELD,
     ):  # Set blank=False if not nullable (bool handles null differently)
         options["blank"] = False
 
     # Handle defaults (introspection often doesn't retrieve them properly)
     if col.default is not None:  # Only set if explicitly provided
         # Maybe parse string defaults like 'uuid4()' into UUID field defaults
-        if field_type == "UUIDField" and str(col.default).lower() in [
+        if field_type == DjangoFieldTypes.UUID_FIELD and str(col.default).lower() in [
             "uuid4()",
             "gen_random_uuid()",
         ]:
@@ -320,17 +172,17 @@ def map_db_type_to_openapi(col: ColumnInfo) -> Dict[str, Any]:
 
     # Instead of calling map_db_type_to_django with table_info=None (which is fragile),
     # we'll determine the Django field type locally with simpler logic for OpenAPI purposes
-    field_type = DJANGO_FIELD_MAP.get(col.db_type_string, "TextField")
+    field_type = DJANGO_FIELD_MAP.get(col.db_type_string, DjangoFieldTypes.TEXT_FIELD)
 
     # For OpenAPI purposes, we treat all primary key integer fields as AutoField
     # since we don't have table context to determine if it's composite
-    if col.is_pk and field_type in ("IntegerField", "BigIntegerField", "SmallIntegerField"):
+    if col.is_pk and field_type in FieldCategories.INTEGER_TYPES:
         if "Big" in field_type:
-            field_type = "BigAutoField"
+            field_type = DjangoFieldTypes.BIG_AUTO_FIELD
         elif "Small" in field_type:
-            field_type = "SmallAutoField"
+            field_type = DjangoFieldTypes.SMALL_AUTO_FIELD
         else:
-            field_type = "AutoField"
+            field_type = DjangoFieldTypes.AUTO_FIELD
 
     # Get the base schema from the OpenAPI map
     schema = OPENAPI_TYPE_MAP.get(field_type, OPENAPI_TYPE_MAP["Unknown"]).copy()
@@ -339,7 +191,7 @@ def map_db_type_to_openapi(col: ColumnInfo) -> Dict[str, Any]:
     schema["nullable"] = col.nullable
 
     # Add maxLength if applicable and available
-    if field_type in ("CharField", "TextField") and col.internal_size and col.internal_size > 0:
+    if field_type in (DjangoFieldTypes.CHAR_FIELD, DjangoFieldTypes.TEXT_FIELD) and col.internal_size and col.internal_size > 0:
         schema["maxLength"] = col.internal_size
 
     # Ensure readOnly is set for PKs if not already handled by type map
@@ -412,22 +264,59 @@ def analyze_relationships_django(
             target_table = table_map[target_table_name]
             target_model_name = target_table.model_name  # Get mapped name
 
-            # Generate relationship field name (e.g., 'author' from 'author_id')
-            rel_name_base = (
-                fk_col_name.rsplit("_id", 1)[0]
-                if fk_col_name.endswith("_id")
-                else fk_col_name
-            )
-            rel_name_guess = clean_field_name(rel_name_base)
+            # Generate relationship field name using naming conventions
+            rel_name_guess = NamingConventions.foreign_key_to_relationship(fk_col_name)
 
-            # Avoid name clash with the FK field itself (if cleaning didn't change it)
-            if rel_name_guess == clean_field_name(fk_col_name):
-                rel_name_guess += (
-                    "_rel"  # Add suffix to distinguish relation field from FK field
-                )
-            # Avoid clash with target model name (lowercase)
+            # Get the cleaned FK field name for comparison
+            fk_field_name = clean_field_name(fk_col_name)
+
+            # Django FK naming strategy:
+            # For a column 'address_id', create relationship field 'address' and exclude the raw 'address_id' field
+            # Django will automatically map 'address' ForeignKey to 'address_id' database column
+            # This avoids all naming conflicts.
+
+            # Only add suffix if there would be a conflict with other field names or the target model name
+            needs_suffix = False
+            original_rel_name = rel_name_guess
+
+            # Case 1: Avoid clash with target model name (lowercase)
             if rel_name_guess == target_model_name.lower():
+                needs_suffix = True
+                logger.debug(f"Target model name clash detected: relationship '{rel_name_guess}' == model '{target_model_name.lower()}'")
+
+            # Case 2: Check for conflicts with existing non-FK field names
+            # Only consider fields that are NOT FK fields (since we'll be excluding all FK fields anyway)
+            existing_non_fk_field_names = set()
+            for field_data in table.fields:
+                if not field_data.get("is_fk", False):
+                    existing_non_fk_field_names.add(field_data["name"])
+
+            if rel_name_guess in existing_non_fk_field_names:
+                needs_suffix = True
+                logger.debug(f"Non-FK field clash detected: relationship '{rel_name_guess}' conflicts with existing field")
+
+            # Case 3: Check for conflicts with relationship names we've already created
+            existing_rel_names = {r["name"] for r in relationships}
+            if rel_name_guess in existing_rel_names:
+                needs_suffix = True
+                logger.debug(f"Relationship name clash detected: '{rel_name_guess}' already exists")
+
+            if needs_suffix:
                 rel_name_guess += "_rel"
+
+            # Additional safety check: if relationship name would still conflict, make it more unique
+            counter = 1
+            original_rel_name = rel_name_guess
+            while (rel_name_guess in existing_non_fk_field_names or
+                   rel_name_guess in existing_rel_names or
+                   rel_name_guess == target_model_name.lower()):
+                rel_name_guess = f"{original_rel_name}_{counter}"
+                counter += 1
+                if counter > 10:  # Prevent infinite loop
+                    logger.error(f"Could not generate unique relationship name for {fk_col_name} after 10 attempts")
+                    break
+
+            logger.debug(f"Generated relationship name '{rel_name_guess}' for FK column '{fk_col_name}'")
 
             # Get null/blank status from the original FK column
             fk_col_obj = next((c for c in table.columns if c.name == fk_col_name), None)
@@ -437,22 +326,60 @@ def analyze_relationships_django(
             fk_blankable = fk_nullable  # Simple assumption: blank = null for FKs
 
             # TODO: Determine on_delete (requires specific constraint info or config)
-            on_delete_action = "CASCADE"
+            on_delete_action = RelationshipDefaults.DEFAULT_ON_DELETE
 
             # Generate unique related_name to avoid clashes
             # Count how many FKs from current table already point to target_table
             existing_rels_to_target = [r for r in relationships if r.get("target_table") == target_table_name]
-            base_related_name = p.plural(table.name)
 
             if len(existing_rels_to_target) == 0:
                 # First FK to this target - use simple plural name
-                related_name = base_related_name
+                related_name = NamingConventions.generate_reverse_name(table.name)
             else:
                 # Multiple FKs to same target - make related_name unique
                 # Use the field name to differentiate
-                related_name = f"{base_related_name}_{rel_name_guess}"
+                related_name = NamingConventions.generate_reverse_name(table.name, rel_name_guess)
+
+            # Ensure related_name is unique across all existing relationships
+            # Need to check all relationships from all tables, not just current table
+            all_existing_related_names = set()
+            for tbl in tables:
+                for rel in tbl.relationships:
+                    if rel.get("related_name"):
+                        all_existing_related_names.add(rel.get("related_name"))
+
+            # Also check current relationships being built
+            for rel in relationships:
+                if rel.get("related_name"):
+                    all_existing_related_names.add(rel.get("related_name"))
+
+            counter = 1
+            original_related_name = related_name
+            while related_name in all_existing_related_names:
+                related_name = f"{original_related_name}_{counter}"
+                counter += 1
+                if counter > 10:  # Prevent infinite loop
+                    logger.error(f"Could not generate unique related_name for {rel_name_guess} after 10 attempts")
+                    break
 
             # ManyToOne relationship from current table to target table
+            django_field_options = {
+                "on_delete": on_delete_action,
+                "null": fk_nullable,
+                "blank": fk_blankable,
+                # Add verbose_name, help_text later?
+            }
+
+            # Only set db_column if the relationship name doesn't follow Django's automatic convention
+            # Django automatically maps 'address' -> 'address_id', so we don't need to specify db_column
+            expected_db_column = f"{rel_name_guess}_id"
+            if fk_col_name != expected_db_column:
+                # The FK column doesn't follow Django's naming convention, so we need to specify it
+                django_field_options["db_column"] = fk_col_name
+                logger.debug(f"Setting db_column='{fk_col_name}' for relationship '{rel_name_guess}' (doesn't follow Django convention)")
+            else:
+                logger.debug(f"Using Django's automatic column mapping for relationship '{rel_name_guess}' -> column '{fk_col_name}'")
+
             mto_rel = {
                 "name": rel_name_guess,
                 "type": "many-to-one",
@@ -465,25 +392,26 @@ def analyze_relationships_django(
                 "target_columns": [
                     target_col_name
                 ],  # Assumed from introspection format
-                "django_field_options": {
-                    "on_delete": on_delete_action,
-                    "db_column": fk_col_name,  # Explicitly set db_column for clarity
-                    "null": fk_nullable,
-                    "blank": fk_blankable,
-                    # Add verbose_name, help_text later?
-                },
+                "django_field_options": django_field_options,
             }
             relationships.append(mto_rel)
 
             # Mark the original FK column's corresponding Django field as 'handled'
             # so it's not rendered directly in models.py if the FK relation field exists
+            fk_field_marked = False
             for field_data in table.fields:
                 if field_data["original_column_name"] == fk_col_name:
                     field_data["is_handled_by_relation"] = True
+                    fk_field_marked = True
                     logger.debug(
-                        f"Marking field {table.name}.{field_data['name']} as handled by relation {rel_name_guess}"
+                        f"Marking field {table.name}.{field_data['name']} (column: {fk_col_name}) as handled by relation {rel_name_guess}"
                     )
                     break
+
+            if not fk_field_marked:
+                logger.warning(
+                    f"Could not find field corresponding to FK column {fk_col_name} in table {table.name} to mark as handled"
+                )
 
         # --- TODO: Pass 2: Detect ManyToMany relationships ---
         # Heuristic: Identify join tables (tables with exactly two FKs forming the PK)
@@ -518,7 +446,7 @@ def analyze_relationships_django(
         substantial_fields = [
             f for f in table.fields
             if not f["is_pk"] and not f["is_fk"] and
-            not f["name"].lower() in (
+            f["name"].lower() not in (
                 "created_at", "updated_at", "created", "modified",
                 "creation_date", "modification_date", "timestamp"
             )
@@ -552,7 +480,7 @@ def analyze_relationships_django(
                 metadata_fields = []
                 for field in table.fields:
                     if (not field["is_pk"] and not field["is_fk"] and
-                        not field["name"].lower() in (
+                        field["name"].lower() not in (
                             "created_at", "updated_at", "created", "modified",
                             "creation_date", "modification_date", "timestamp"
                         )
@@ -588,7 +516,7 @@ def analyze_relationships_django(
         fk2_column = join_table["fk2_column"]
         metadata_fields = join_table["metadata_fields"]
 
-        # Get the model objects        m2m_rel = {
+        # Get the model objects
         target1 = table_map.get(target1_name)
         target2 = table_map.get(target2_name)
 
@@ -760,44 +688,141 @@ def analyze_relationships_django(
 
 
 def build_intermediate_representation(schema_infos: List[TableInfo]) -> List[TableInfo]:
-    """Processes raw schema info, applies mappings & conventions, extracts meta constraints/indexes."""
+    """
+    Process raw schema info using domain services for mapping and analysis.
+
+    This function orchestrates the transformation of database schema information
+    into Django model representations using the domain layer services.
+
+    Args:
+        schema_infos: List of TableInfo from database introspection
+
+    Returns:
+        List of processed TableInfo with mapped fields, relationships, and constraints
+    """
     logger.info(
-        "Building intermediate representation (from Django introspection results)..."
+        "Building intermediate representation using domain services..."
     )
     intermediate_repr: List[TableInfo] = []
-    table_map: Dict[str, TableInfo] = {info.name: info for info in schema_infos}
 
-    # --- Pass 1: Map basic fields ---
+    # Initialize domain services
+    field_mapper = DomainFieldMapper()
+    relationship_analyzer = RelationshipAnalyzer()
+    constraint_analyzer = ConstraintAnalyzer()
+
+    # --- Pass 1: Map basic fields using domain service ---
     for table_info in schema_infos:
-        table_info.model_name = to_pascal_case(table_info.name)
+        # Set model name using naming convention
+        if not table_info.model_name:
+            table_info.model_name = to_pascal_case(table_info.name)
+
         logger.info(
             f"Mapping table '{table_info.name}' to model '{table_info.model_name}'"
         )
+
+        # Use domain field mapper for field mapping
         django_fields = []
         for col in table_info.columns:
-            django_field_type, django_options = map_db_type_to_django(col, table_info)
-            field_name = clean_field_name(col.name)
-            django_fields.append(
-                {
-                    "name": field_name,
-                    "type": django_field_type,
-                    "options": django_options,
-                    "original_column_name": col.name,
-                    "is_pk": col.is_pk,
-                    "is_fk": col.is_foreign_key,
-                    "is_handled_by_relation": False,  # Initial default
-                    "openapi_schema": map_db_type_to_openapi(col),
-                }
-            )
-        table_info.fields = django_fields
-        intermediate_repr.append(table_info)  # Add tables with basic fields mapped
+            try:
+                # Use domain field mapping service
+                field_mapping = field_mapper.map_column(col)
+                field_name = clean_field_name(col.name)
 
-    # --- Pass 2: Analyze Relationships (Updates 'is_handled_by_relation' flag) ---
-    analyze_relationships_django(intermediate_repr, table_map)
+                django_fields.append(
+                    {
+                        "name": field_name,
+                        "type": field_mapping.django_field_type,
+                        "options": field_mapping.django_field_options,
+                        "original_column_name": col.name,
+                        "is_pk": col.is_pk,
+                        "is_fk": col.is_foreign_key,
+                        "is_handled_by_relation": False,  # Initial default
+                        "openapi_schema": field_mapping.openapi_schema,
+                        "field_mapping": field_mapping,  # Store domain mapping
+                    }
+                )
+            except Exception as e:
+                logger.warning(f"Failed to map column {col.name}: {e}")
+                # Fallback to legacy mapping
+                django_field_type, django_options = map_db_type_to_django(col, table_info)
+                field_name = clean_field_name(col.name)
+                django_fields.append(
+                    {
+                        "name": field_name,
+                        "type": django_field_type,
+                        "options": django_options,
+                        "original_column_name": col.name,
+                        "is_pk": col.is_pk,
+                        "is_fk": col.is_foreign_key,
+                        "is_handled_by_relation": False,
+                        "openapi_schema": map_db_type_to_openapi(col),
+                    }
+                )
+
+        table_info.fields = django_fields
+        intermediate_repr.append(table_info)
+
+    # --- Pass 2: Analyze Relationships using domain service ---
+    try:
+        relationships = relationship_analyzer.analyze_relationships(intermediate_repr)
+
+        # Convert domain relationships to legacy format for compatibility
+        for table_info in intermediate_repr:
+            table_relationships = [
+                rel for rel in relationships
+                if rel.source_table == table_info.name
+            ]
+
+            # Convert to legacy format for now (backward compatibility)
+            legacy_relationships = []
+            for rel in table_relationships:
+                legacy_rel = {
+                    "name": rel.name,
+                    "type": rel.relationship_type.value,
+                    "target_table": rel.target_table,
+                    "related_name": rel.related_name,
+                    "on_delete": rel.on_delete
+                }
+                
+                # Add M2M-specific fields if they exist
+                if rel.through_table:
+                    legacy_rel["through"] = rel.through_table
+                if rel.through_fields:
+                    legacy_rel["through_fields"] = rel.through_fields
+                if rel.symmetrical is not None:
+                    legacy_rel["symmetrical"] = rel.symmetrical
+                    
+                legacy_relationships.append(legacy_rel)
+
+            table_info.relationships = legacy_relationships
+
+        # Domain service doesn't mark fields as handled yet, so we need to do this manually
+        # Mark foreign key fields as handled by relationships
+        for table_info in intermediate_repr:
+            for rel in table_info.relationships:
+                # For many-to-one relationships, mark the source FK column as handled
+                if rel.get("type") in ("many-to-one", "many_to_one"):
+                    # Try to find the FK column from the relationship name
+                    rel_name = rel.get("name", "")
+                    expected_fk_col = f"{rel_name}_id"
+
+                    # Mark the corresponding field as handled
+                    for field_dict in table_info.fields:
+                        if field_dict.get("original_column_name") == expected_fk_col:
+                            field_dict["is_handled_by_relation"] = True
+                            logger.debug(f"Marking field {table_info.name}.{field_dict['name']} (column: {expected_fk_col}) as handled by relation {rel_name}")
+                            break
+
+    except Exception as e:
+        logger.warning(f"Domain relationship analysis failed, using legacy: {e}")
+        # Fallback to legacy relationship analysis
+        table_map = {info.name: info for info in intermediate_repr}
+        analyze_relationships_django(intermediate_repr, table_map)
+
     logger.info("Relationship analysis complete.")
 
-    # --- Pass 3: Process Constraints/Indexes using final field info ---
-    logger.info("Processing constraints and indexes for Meta...")
+    # --- Pass 3: Process Constraints using domain service ---
+    logger.info("Processing constraints and indexes using domain services...")
     for table_info in intermediate_repr:  # Iterate again over the updated tables
         meta_constraints = []
         meta_indexes = []
@@ -816,12 +841,23 @@ def build_intermediate_representation(schema_infos: List[TableInfo]) -> List[Tab
             f["original_column_name"]: f for f in table_info.fields
         }
 
-        for constraint_name, c_data in table_info.constraints.items():
+        for constraint in table_info.constraints:
+            constraint_name = constraint.name
             if constraint_name in processed_constraint_names:
                 continue
-            columns = c_data.get("columns", [])
+            columns = constraint.columns
             if not columns:
                 continue
+
+            # Get constraint data - build from ConstraintInfo attributes
+            c_data = {
+                "unique": constraint.constraint_type == "unique" or constraint.is_unique_index,
+                "primary_key": constraint.constraint_type == "primary_key",
+                "foreign_key": constraint.constraint_type == "foreign_key",
+                "index": constraint.constraint_type == "index" or constraint.is_unique_index,
+                "check": constraint.constraint_type == "check",
+                "definition": constraint.definition
+            }
 
             # --- Determine correct Django field names for this constraint/index ---
             mapped_field_names_for_meta = []
