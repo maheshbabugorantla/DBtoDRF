@@ -8,8 +8,10 @@ from drf_auto_generator.ast_codegen.base import (
     create_string_constant, create_boolean_constant, create_integer_constant,
     create_none_constant, create_keyword, create_tuple_of_strings, add_location, pluralize
 )
-from drf_auto_generator.introspection_django import TableInfo, ColumnInfo
-from drf_auto_generator.mapper import to_pascal_case, map_db_type_to_django
+from drf_auto_generator.domain.models import TableInfo, ColumnInfo
+from drf_auto_generator.mapper import map_db_type_to_django
+from drf_auto_generator.domain.naming import to_pascal_case
+
 
 
 logger = logging.getLogger(__name__)
@@ -90,12 +92,17 @@ def create_relationship_field(rel_info: Dict[str, Any]) -> ast.Assign:
         keywords.append(create_keyword("blank", create_boolean_constant(True)))
 
     django_field_type = ""
-    if field_type == 'many-to-one':
+    if field_type in ('many-to-one', 'many_to_one'):
         django_field_type = "ForeignKey"
-        on_delete_action = options.get('on_delete', 'CASCADE')
+        on_delete_action = options.get('on_delete', 'PROTECT')
         on_delete_argument = ast.Attribute(value=ast.Name(id='models', ctx=ast.Load()), attr=on_delete_action, ctx=ast.Load())
         keywords.append(create_keyword("on_delete", on_delete_argument))
-    elif field_type == 'many-to-many':
+    elif field_type in ('one-to-one', 'one_to_one'):
+        django_field_type = "OneToOneField"
+        on_delete_action = options.get('on_delete', 'PROTECT')
+        on_delete_argument = ast.Attribute(value=ast.Name(id='models', ctx=ast.Load()), attr=on_delete_action, ctx=ast.Load())
+        keywords.append(create_keyword("on_delete", on_delete_argument))
+    elif field_type in ('many-to-many', 'many_to_many'):
         django_field_type = "ManyToManyField"
         # M2M specific options - rebuild keywords properly
         m2m_keywords = []
@@ -372,18 +379,33 @@ def create_model_class(table_info: TableInfo) -> ast.ClassDef:
 
     # Fields - Filter out fields that are handled by relationships
     fields_to_include = []
+    excluded_by_relation = []
+
     for col in table_info.columns:
         # Check if this column is handled by a relationship
         is_handled = False
+        handling_relation = None
+
         for field_dict in table_info.fields:
             if (field_dict.get("original_column_name") == col.name and
                 field_dict.get("is_handled_by_relation", False)):
                 is_handled = True
+                # Find which relationship handles this field
+                for rel in table_info.relationships:
+                    if col.name in rel.get("source_columns", []):
+                        handling_relation = rel.get("name")
+                        break
                 break
 
         # Include the field if it's not handled by a relationship
         if not is_handled:
             fields_to_include.append(col)
+        else:
+            excluded_by_relation.append((col.name, handling_relation))
+            logger.debug(f"Excluding field {col.name} from model {table_info.model_name} (handled by relationship: {handling_relation})")
+
+    if excluded_by_relation:
+        logger.info(f"Model {table_info.model_name}: Excluded {len(excluded_by_relation)} FK fields handled by relationships: {[name for name, _ in excluded_by_relation]}")
 
     model_body.extend(create_model_field(col, table_info) for col in fields_to_include)
 

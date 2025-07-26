@@ -13,7 +13,7 @@ from typing import List, Dict, Type, Any
 from abc import ABC, abstractmethod
 from jinja2 import Environment
 
-from drf_auto_generator.introspection_django import TableInfo
+from drf_auto_generator.domain.models import TableInfo
 from drf_auto_generator.codegen import generate_file_from_template
 from drf_auto_generator.codegen_utils import format_python_code_using_black
 

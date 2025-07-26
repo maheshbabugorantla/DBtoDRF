@@ -7,8 +7,8 @@ from drf_auto_generator.ast_codegen.base import (
     create_list_of_strings, create_string_constant,
     add_location, pluralize
 )
-from drf_auto_generator.introspection_django import TableInfo
-from drf_auto_generator.mapper import to_pascal_case
+from drf_auto_generator.domain.models import TableInfo
+from drf_auto_generator.domain.naming import to_pascal_case
 
 
 logger = logging.getLogger(__name__)

@@ -11,8 +11,8 @@ from typing import List
 from drf_auto_generator.ast_codegen.base import (
     create_import, create_class_def, create_assign, create_list_of_strings, pluralize
 )
-from drf_auto_generator.introspection_django import TableInfo
-from drf_auto_generator.mapper import to_pascal_case
+from drf_auto_generator.domain.models import TableInfo
+from drf_auto_generator.domain.naming import to_pascal_case
 
 
 logger = logging.getLogger(__name__)
