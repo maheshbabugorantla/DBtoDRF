@@ -20,7 +20,7 @@ from inflect import engine as inflect_engine
 
 
 # Import from the Django introspection module
-from drf_auto_generator.introspection_django import TableInfo
+from drf_auto_generator.domain.models import TableInfo
 from drf_auto_generator.config_validation import ToolConfigSchema
 
 # Import the AST code generator components

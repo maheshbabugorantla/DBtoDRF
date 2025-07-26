@@ -81,6 +81,10 @@ def create_relationship_field(rel_info: Dict[str, Any]) -> ast.Assign:
     related_name = rel_info.get('related_name')
     options = rel_info.get('django_field_options', {})
 
+    # Debug logging for M2M fields
+    if field_type in ('many-to-many', 'many_to_many'):
+        logger.debug(f"Creating M2M field {field_name}: target={target_model}, options={options}")
+
     keywords = []
     if related_name:
         keywords.append(create_keyword("related_name", create_string_constant(related_name)))
@@ -111,11 +115,20 @@ def create_relationship_field(rel_info: Dict[str, Any]) -> ast.Assign:
         if related_name:
             m2m_keywords.append(create_keyword("related_name", create_string_constant(related_name)))
 
-        # Add through and through_fields if available
-        if options.get('through'):
-            m2m_keywords.append(create_keyword("through", create_string_constant(options['through'])))
-        if options.get('through_fields'):
-            m2m_keywords.append(create_keyword("through_fields", create_tuple_of_strings(options['through_fields'])))
+        # Add through and through_fields if available (check both options and rel_info directly)
+        through_model = options.get('through') or rel_info.get('through_model')
+        through_table = rel_info.get('through') or rel_info.get('through_table')
+
+        if through_model:
+            m2m_keywords.append(create_keyword("through", create_string_constant(through_model)))
+        elif through_table:
+            # Convert table name to model name using the same convention as other models
+            through_model_name = to_pascal_case(pluralize(through_table))
+            m2m_keywords.append(create_keyword("through", create_string_constant(through_model_name)))
+
+        through_fields = options.get('through_fields') or rel_info.get('through_fields')
+        if through_fields:
+            m2m_keywords.append(create_keyword("through_fields", create_tuple_of_strings(through_fields)))
 
         # Add other M2M specific options
         if options.get('symmetrical') is not None:

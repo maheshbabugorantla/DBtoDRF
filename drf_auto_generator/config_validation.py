@@ -1,6 +1,5 @@
-# File: drf_auto_generator/validation.py
+# File: drf_auto_generator/config_validation.py
 from argparse import Namespace
-import sys
 import logging
 import keyword
 from typing import List, Optional, Dict, Any, Literal, Self
@@ -16,6 +15,9 @@ from pydantic import (
     model_validator,
     ConfigDict,
 )
+
+from .constants import SupportedDatabases, DefaultConfig
+from .exceptions import ConfigurationError
 
 logger = logging.getLogger(__name__)
 
@@ -56,9 +58,8 @@ class DatabaseSettings(BaseModel):
     @classmethod
     def validate_engine(cls, v: str) -> str:
         """Ensure engine is a valid Django database engine."""
-        supported_db_engines = ['django.db.backends.postgresql', 'django.db.backends.sqlite3']
-        if v not in supported_db_engines:
-            raise ValueError(f"Database engine: {v} is not supported. Supported engines are: {', '.join(supported_db_engines)}")
+        if v not in SupportedDatabases.ALL:
+            raise ValueError(f"Database engine: {v} is not supported. Supported engines are: {', '.join(SupportedDatabases.ALL)}")
         return v
 
     # --- Use @field_validator for PORT ---
@@ -101,17 +102,17 @@ class ToolConfigSchema(BaseModel):
         description="Django DATABASES setting dictionary. Must contain a 'default' key.",
     )
     output_dir: str = Field(
-        "./generated_api_django",
+        DefaultConfig.OUTPUT_DIR,
         min_length=1,
         description="Directory for generated project output.",
     )
     project_name: str = Field(
-        "myapi_django",
+        DefaultConfig.PROJECT_NAME,
         min_length=1,
         description="Name for the generated Django project (Python identifier).",
     )
     app_name: str = Field(
-        "api",
+        DefaultConfig.APP_NAME,
         min_length=1,
         description="Name for the generated Django app (Python identifier).",
     )
@@ -127,29 +128,29 @@ class ToolConfigSchema(BaseModel):
         description="If True and include_tables is set, automatically add tables related via FKs.",
     )
     relation_style: Literal["pk", "link", "nested"] = Field(
-        default="pk",
+        default=DefaultConfig.RELATION_STYLE,
         description="Style for representing relationships ('pk', 'link', 'nested').",
     )
     openapi_title: str = Field(
-        default="Auto-Generated API",
+        default=DefaultConfig.OPENAPI_TITLE,
         min_length=1,
         description="Title for the OpenAPI specification.",
     )
     openapi_version: str = Field(
-        default="1.0.0",
+        default=DefaultConfig.OPENAPI_VERSION_NUMBER,
         min_length=1,
         description="Version string for the OpenAPI specification.",
     )
     openapi_description: str = Field(
-        default="API generated automatically.",
+        default=DefaultConfig.OPENAPI_DESCRIPTION,
         description="Description for the OpenAPI specification.",
     )
     openapi_server_url: str = Field(
-        default="http://127.0.0.1:8000/",
+        default=DefaultConfig.OPENAPI_SERVER_URL,
         description="Base URL for the API server in OpenAPI spec.",
     )
     generate_api_tests: bool = Field(
-        default=True, description="Whether to generate basic Django APITestCase files."
+        default=DefaultConfig.GENERATE_API_TESTS, description="Whether to generate basic Django APITestCase files."
     )
 
     # Internal field, usually added by load_config if not provided by user
@@ -239,7 +240,7 @@ class ToolConfigSchema(BaseModel):
 def validate_and_parse_config(config_dict: Dict[str, Any]) -> ToolConfigSchema:
     """
     Validates a raw configuration dictionary against the ToolConfigSchema.
-    Exits with error messages if validation fails.
+    Raises ConfigurationError if validation fails.
     """
     try:
         validated_config = ToolConfigSchema.model_validate(
@@ -253,42 +254,39 @@ def validate_and_parse_config(config_dict: Dict[str, Any]) -> ToolConfigSchema:
         logger.critical(
             "Configuration validation failed! Please check your config file or arguments."
         )
-        print("\n--- Configuration Errors ---", file=sys.stderr)
-        # Use e.errors() which is standard in V1 and V2
+
+        # Collect all errors
+        error_messages = []
         for error in e.errors():
             loc_parts = [str(loc_item) for loc_item in error.get("loc", ())]
-            loc_str = (
-                " -> ".join(loc_parts) if loc_parts else "Model Level"
-            )  # Adjust 'Top Level'
+            loc_str = " -> ".join(loc_parts) if loc_parts else "Model Level"
             msg = error.get("msg", "Unknown validation error")
             input_value = error.get("input", "N/A")
 
-            print(f"  - Location: '{loc_str}'", file=sys.stderr)
-            # Show input value if helpful
-            # print(f"    Input:    '{input_value}' ({type(input_value).__name__})", file=sys.stderr)
-            print(f"    Error:    {msg}", file=sys.stderr)
+            error_msg = f"Location '{loc_str}': {msg}"
+            error_messages.append(error_msg)
 
-            # Provide specific hints (can be kept similar)
-            err_type = error.get("type")
-            ctx = error.get("ctx", {})
-            if "identifier" in str(err_type) or (
-                "value_error" in str(err_type)
-                and any(x in loc_parts for x in ["project_name", "app_name"])
-            ):
-                print(
-                    f"    Hint:     Value '{input_value}' must be a valid Python variable name.",
-                    file=sys.stderr,
-                )
-            # ... (other hints remain similar) ...
+            # Log detailed error
+            logger.error(f"Validation error at {loc_str}: {msg} (input: {input_value})")
 
-        print("----------------------------", file=sys.stderr)
-        sys.exit(1)
+        # Raise our custom exception
+        raise ConfigurationError(
+            "Configuration validation failed",
+            context={
+                "validation_errors": error_messages,
+                "config_dict_keys": list(config_dict.keys()),
+                "suggestion": "Check your configuration file for syntax errors and required fields"
+            }
+        )
     except Exception as e:
         logger.critical(
             f"An unexpected error occurred during configuration parsing: {e}",
             exc_info=True,
         )
-        sys.exit(1)
+        raise ConfigurationError(
+            f"Unexpected error during configuration parsing: {e}",
+            context={"original_exception": str(e)}
+        )
 
 
 def load_config(config_path: Optional[str], cli_args: Namespace) -> ToolConfigSchema:
@@ -319,10 +317,16 @@ def load_config(config_path: Optional[str], cli_args: Namespace) -> ToolConfigSc
                 )
         except yaml.YAMLError as e:
             logger.error(f"Error parsing YAML file {config_path}: {e}")
-            logger.warning("Proceeding with defaults and CLI arguments only.")
+            raise ConfigurationError(
+                f"Invalid YAML syntax in configuration file: {config_path}",
+                context={"yaml_error": str(e), "file_path": str(config_path)}
+            )
         except Exception as e:
             logger.error(f"Error reading config file {config_path}: {e}")
-            logger.warning("Proceeding with defaults and CLI arguments only.")
+            raise ConfigurationError(
+                f"Cannot read configuration file: {config_path}",
+                context={"error": str(e), "file_path": str(config_path)}
+            )
 
     # 2. Override with CLI arguments (only those explicitly provided)
     cli_dict = vars(cli_args)

@@ -87,7 +87,7 @@ class RelationshipAnalyzer:
                     # Generate consistent related_name using model_name_field_name_set convention
                     relationship_name = self._generate_relationship_name(column.name)
                     related_name = f"{table.name}_{relationship_name}_set"
-                    
+
                     relationship = RelationshipInfo(
                         name=self._generate_relationship_name(column.name),
                         relationship_type=RelationshipType.MANY_TO_ONE,
@@ -109,12 +109,11 @@ class RelationshipAnalyzer:
         """Analyze many-to-many relationships via through tables."""
         relationships = []
 
-        # Check if this table is a many-to-many through table
-        if table.is_many_to_many_through_table():
-            fk_columns = table.foreign_key_columns
+        # Check if this table is a potential M2M through table
+        if self._is_many_to_many_through_table(table, all_tables):
+            fk_columns = self._get_foreign_key_columns(table)
 
             if len(fk_columns) == 2:
-                # Create many-to-many relationships between the two referenced tables
                 table1_fk = fk_columns[0]
                 table2_fk = fk_columns[1]
 
@@ -123,21 +122,132 @@ class RelationshipAnalyzer:
                     table2_name = table2_fk.foreign_key_to[0]
 
                     if table1_name in all_tables and table2_name in all_tables:
-                        # Create relationship from table1 to table2
-                        relationship = RelationshipInfo(
-                            name=f"{table2_name}s",
-                            relationship_type=RelationshipType.MANY_TO_MANY,
-                            source_table=table1_name,
-                            target_table=table2_name,
-                            source_columns=[table1_fk.name],
-                            target_columns=[table2_fk.name],
-                            through_table=table.name,
-                            through_fields=(table1_fk.name, table2_fk.name),
-                            related_name=f"{table1_name}_set"
-                        )
-                        relationships.append(relationship)
+                        # Mark this table as M2M through table
+                        table.is_m2m_through_table = True
+
+                        # Handle self-referential M2M
+                        if table1_name == table2_name:
+                            self._create_self_referential_m2m(
+                                table, table1_name, table1_fk, table2_fk,
+                                all_tables, relationships
+                            )
+                        else:
+                            # Create bidirectional M2M relationships
+                            self._create_bidirectional_m2m(
+                                table, table1_name, table2_name,
+                                table1_fk, table2_fk, all_tables, relationships
+                            )
 
         return relationships
+
+    def _is_many_to_many_through_table(self, table: TableInfo, all_tables: Dict[str, TableInfo]) -> bool:
+        """Determine if a table is a M2M through table using sophisticated heuristics."""
+        fk_columns = self._get_foreign_key_columns(table)
+
+        # Must have exactly 2 FKs
+        if len(fk_columns) != 2:
+            return False
+
+        # Get PK fields
+        pk_fields = [col for col in table.columns if col.is_pk]
+
+        # Check if PK consists of both FK columns (composite key)
+        if len(pk_fields) >= 2:
+            pk_field_names = [col.name for col in pk_fields]
+            fk_field_names = [col.name for col in fk_columns]
+            has_pk_consisting_of_fks = all(name in fk_field_names for name in pk_field_names)
+
+            if has_pk_consisting_of_fks:
+                return True
+
+        # Alternative check: table only has 2 FKs and minimal other fields
+        substantial_fields = [
+            col for col in table.columns
+            if not col.is_pk and not col.is_foreign_key and
+            col.name.lower() not in (
+                "created_at", "updated_at", "created", "modified",
+                "creation_date", "modification_date", "timestamp"
+            )
+        ]
+
+        return len(substantial_fields) <= 1
+
+    def _get_foreign_key_columns(self, table: TableInfo):
+        """Get foreign key columns from a table."""
+        return [col for col in table.columns if col.is_foreign_key]
+
+    def _create_self_referential_m2m(
+        self, through_table: TableInfo, target_table_name: str,
+        fk1, fk2, all_tables: Dict[str, TableInfo], relationships: List[RelationshipInfo]
+    ):
+        """Create self-referential M2M relationship."""
+        # Generate descriptive field name based on through table or column names
+        rel_name = through_table.name
+
+        # Try to create better names based on column names
+        if any(s in fk1.name.lower() for s in ["from", "source", "follower"]):
+            rel_name = "followers"
+        elif any(s in fk1.name.lower() for s in ["to", "target", "following"]):
+            rel_name = "following"
+        else:
+            # Use plural form of through table name
+            rel_name = f"{through_table.name}s"
+
+        relationship = RelationshipInfo(
+            name=rel_name,
+            relationship_type=RelationshipType.MANY_TO_MANY,
+            source_table=target_table_name,
+            target_table=target_table_name,
+            source_columns=[fk1.name],
+            target_columns=[fk2.name],
+            through_table=through_table.name,
+            through_fields=(fk1.name, fk2.name),
+            related_name=f"{rel_name}_of",
+            symmetrical=False  # Most self-referential relationships aren't symmetrical
+        )
+        relationships.append(relationship)
+
+    def _create_bidirectional_m2m(
+        self, through_table: TableInfo, table1_name: str, table2_name: str,
+        table1_fk, table2_fk, all_tables: Dict[str, TableInfo], relationships: List[RelationshipInfo]
+    ):
+        """Create bidirectional M2M relationships."""
+        # Only create one M2M field (on the lexicographically first table)
+        # to avoid duplicate relationships
+        if table1_name <= table2_name:
+            # Put M2M field on table1 pointing to table2
+            rel_name = f"{table2_name}s"  # Plural of target table
+            related_name = f"{table1_name}s"  # Plural of source table for reverse
+
+            relationship = RelationshipInfo(
+                name=rel_name,
+                relationship_type=RelationshipType.MANY_TO_MANY,
+                source_table=table1_name,
+                target_table=table2_name,
+                source_columns=[table1_fk.name],
+                target_columns=[table2_fk.name],
+                through_table=through_table.name,
+                through_fields=(table1_fk.name, table2_fk.name),
+                related_name=related_name
+            )
+        else:
+            # Put M2M field on table2 pointing to table1
+            rel_name = f"{table1_name}s"  # Plural of target table
+            related_name = f"{table2_name}s"  # Plural of source table for reverse
+
+            relationship = RelationshipInfo(
+                name=rel_name,
+                relationship_type=RelationshipType.MANY_TO_MANY,
+                source_table=table2_name,
+                target_table=table1_name,
+                source_columns=[table2_fk.name],
+                target_columns=[table1_fk.name],
+                through_table=through_table.name,
+                through_fields=(table2_fk.name, table1_fk.name),
+                related_name=related_name
+            )
+
+        relationships.append(relationship)
 
     def _generate_relationship_name(self, column_name: str) -> str:
         """Generate a relationship field name from column name."""
