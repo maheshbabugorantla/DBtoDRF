@@ -18,10 +18,17 @@ from drf_auto_generator.openapi_gen import generate_openapi_spec, save_openapi_s
 # Change from the template-based to AST-based code generation
 from drf_auto_generator.ast_codegen_main import generate_django_code
 
-# Configure root logger
-logging.basicConfig(level=logging.INFO, format="%(name)s:%(levelname)s: %(message)s")
-# Get logger for this module
-logger = logging.getLogger(__name__)  # Use __name__ for module-specific logger
+# Import colored logging
+from drf_auto_generator.colored_logging import (
+    setup_colored_logging,
+    get_colored_logger,
+    log_success,
+    log_progress,
+    log_section
+)
+
+# Note: Colored logging will be configured after parsing args
+logger = None
 
 
 def main():
@@ -55,6 +62,11 @@ def main():
         action="store_true",
         help="Enable verbose DEBUG logging for the generator tool.",
     )
+    parser.add_argument(
+        "--no-color",
+        action="store_true",
+        help="Disable colored output (useful for CI/CD environments).",
+    )
     # Add AST-based code generation option (defaults to True to use AST)
     parser.add_argument(
         "--use-ast",
@@ -66,30 +78,40 @@ def main():
 
     args = parser.parse_args()
 
-    # --- Logging Level Setup ---
+    # --- Logging Setup ---
+    # Configure colored logging based on command line arguments
+    use_colors = not args.no_color
+    log_level = logging.DEBUG if args.verbose else logging.INFO
+    setup_colored_logging(level=log_level, use_colors=use_colors)
+
+    # Get logger for this module
+    global logger
+    logger = get_colored_logger(__name__)
+
     if args.verbose:
-        # Set level on the root logger to affect all loggers (including library logs if needed)
-        logging.getLogger().setLevel(logging.DEBUG)
         logger.debug("Verbose mode enabled. DEBUG level logging activated.")
-    else:
-        # Ensure our logger respects INFO level if not verbose
-        logger.setLevel(logging.INFO)
+    if args.no_color:
+        logger.debug("Color output disabled.")
 
     # --- Main Execution Pipeline ---
     try:
         # 1. Load Configuration
-        logger.info("Loading configuration...")
+        log_progress(logger, "Loading configuration...")
         config = load_config(args.config, args)
+        log_success(logger, "Configuration loaded and validated successfully.")
         logger.debug(
             f"Effective configuration loaded: {config}"
         )  # Debug log the full config
 
         # 2. Setup Django Environment (Crucial Step!)
         # This configures settings and calls django.setup()
+        log_progress(logger, "Configuring Django settings for introspection...")
         setup_django(config["databases"], config["SECRET_KEY"])
+        log_success(logger, "Django setup complete.")
 
         # 3. Introspect Database Schema (using Django connection)
-        logger.info("Starting database schema introspection...")
+        log_section(logger, "Database Schema Introspection")
+        log_progress(logger, "Starting database schema introspection...")
         raw_schema_info: List[TableInfo] = introspect_schema_django(
             # db_alias=DEFAULT_DB_ALIAS, # Can be made configurable if needed
             include_tables=config.get("include_tables"),
@@ -103,28 +125,38 @@ def main():
             sys.exit(0)  # Exit normally if no tables found/selected
 
         # 4. Build Intermediate Representation (Mapping)
-        logger.info("Mapping database schema to intermediate representation...")
+        log_section(logger, "Intermediate Representation")
+        log_progress(logger, "Mapping database schema to intermediate representation...")
         intermediate_repr: List[TableInfo] = build_intermediate_representation(
             raw_schema_info
         )
+        log_success(logger, "Intermediate representation built successfully.")
         logger.debug(
             "Intermediate representation built."
         )  # Avoid logging the whole IR unless very verbose
 
         # 5. Generate OpenAPI Specification
-        logger.info("Generating OpenAPI specification...")
+        log_section(logger, "OpenAPI Specification")
+        log_progress(logger, "Generating OpenAPI specification...")
         openapi_spec = generate_openapi_spec(intermediate_repr, config)
         # Save the spec file within the generated project directory
         save_openapi_spec(openapi_spec, config["output_dir"])
+        log_success(logger, "OpenAPI specification generated and saved successfully.")
 
         # 6. Generate Django Project Code using AST-based generation
-        logger.info("Generating Django project code using AST-based generation...")
+        log_section(logger, "Django Code Generation")
+        log_progress(logger, "Generating Django project code using AST-based generation...")
         generate_django_code(intermediate_repr, config, openapi_spec)
 
         # --- Success ---
-        logger.info("-----------------------------------------")
-        logger.info("API Generation Process Completed Successfully.")
-        logger.info("-----------------------------------------")
+        log_section(logger, "COMPLETION")
+        log_success(logger, "🎉 API Generation Process Completed Successfully! 🎉")
+        logger.info("Follow the steps below to start the API server:")
+        logger.info(f"   cd {config['output_dir']}")
+        logger.info("   uv venv .venv && source .venv/bin/activate")
+        logger.info("   uv pip install -r requirements.txt")
+        logger.info("   python manage.py runserver")
+        logger.info("   Open the browser and navigate to http://127.0.0.1:8000/api/schema/swagger-ui/#/")
 
     # --- Error Handling ---
     except ValueError as e:

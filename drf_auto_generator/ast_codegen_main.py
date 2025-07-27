@@ -192,7 +192,6 @@ def generate_django_code(
         generate_django_tests_using_ast(openapi_spec_dict, config, app_path)
 
     logger.info(f"Django code generation complete. Project created at {output_dir}")
-    logger.info(f"Run 'cd {output_dir} && python manage.py runserver' to start the development server.")
 
 
 def generate_code_from_schema(
