@@ -781,9 +781,11 @@ def build_intermediate_representation(schema_infos: List[TableInfo]) -> List[Tab
                     "type": rel.relationship_type.value,
                     "target_table": rel.target_table,
                     "related_name": rel.related_name,
-                    "on_delete": rel.on_delete
+                    "on_delete": rel.on_delete,
+                    "source_columns": rel.source_columns,
+                    "target_columns": rel.target_columns
                 }
-                
+
                 # Add M2M-specific fields if they exist
                 if rel.through_table:
                     legacy_rel["through"] = rel.through_table
@@ -791,7 +793,7 @@ def build_intermediate_representation(schema_infos: List[TableInfo]) -> List[Tab
                     legacy_rel["through_fields"] = rel.through_fields
                 if rel.symmetrical is not None:
                     legacy_rel["symmetrical"] = rel.symmetrical
-                    
+
                 legacy_relationships.append(legacy_rel)
 
             table_info.relationships = legacy_relationships
@@ -802,16 +804,16 @@ def build_intermediate_representation(schema_infos: List[TableInfo]) -> List[Tab
             for rel in table_info.relationships:
                 # For many-to-one relationships, mark the source FK column as handled
                 if rel.get("type") in ("many-to-one", "many_to_one"):
-                    # Try to find the FK column from the relationship name
-                    rel_name = rel.get("name", "")
-                    expected_fk_col = f"{rel_name}_id"
+                    # Use the actual source columns from the relationship
+                    source_columns = rel.get("source_columns", [])
 
-                    # Mark the corresponding field as handled
-                    for field_dict in table_info.fields:
-                        if field_dict.get("original_column_name") == expected_fk_col:
-                            field_dict["is_handled_by_relation"] = True
-                            logger.debug(f"Marking field {table_info.name}.{field_dict['name']} (column: {expected_fk_col}) as handled by relation {rel_name}")
-                            break
+                    for source_col in source_columns:
+                        # Mark the corresponding field as handled
+                        for field_dict in table_info.fields:
+                            if field_dict.get("original_column_name") == source_col:
+                                field_dict["is_handled_by_relation"] = True
+                                logger.debug(f"Marking field {table_info.name}.{field_dict['name']} (column: {source_col}) as handled by relation {rel.get('name')}")
+                                break
 
     except Exception as e:
         logger.warning(f"Domain relationship analysis failed, using legacy: {e}")
