@@ -946,14 +946,14 @@ def generate_paths_for_table(table: TableInfo, config: Dict[str, Any]) -> Dict[s
     patch_schema_ref = f"#/components/schemas/{model_name}PatchInput"
 
     # List and Create Path
-    list_create_path = f"/{table_name_plural}"
+    list_create_path = f"/{table_name_plural}/"
     paths[list_create_path] = {
         "get": _generate_list_endpoint(table, model_name, table_name_plural, tag_name, schema_ref),
         "post": _generate_create_endpoint(model_name, tag_name, input_schema_ref),
     }
 
     # Detail Path
-    detail_path = f"/{table_name_plural}/{{id}}"
+    detail_path = f"/{table_name_plural}/{{id}}/"
     paths[detail_path] = {
         "parameters": [_create_path_parameter("id", f"The primary key of the {model_name}.", pk_schema)],
         "get": _generate_detail_endpoint(model_name, tag_name, schema_ref),
