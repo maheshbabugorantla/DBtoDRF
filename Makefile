@@ -17,20 +17,15 @@ build_for_postgres:
 	uv pip install -e './[postgres,dev]'
 	@echo "Project built successfully for postgres"
 
-build_for_sqlite:
-	@echo "Building project for sqlite"
-	uv pip install -e './[sqlite,dev]'
-	@echo "Project built successfully for sqlite"
+# build_for_sqlite:
+# 	@echo "Building project for sqlite"
+# 	uv pip install -e './[sqlite,dev]'
+# 	@echo "Project built successfully for sqlite"
 
-build_for_mysql:
-	@echo "Building project for mysql"
-	uv pip install -e './[mysql,dev]'
-	@echo "Project built successfully for mysql"
-
-build_for_mssql:
-	@echo "Building project for mssql"
-	uv pip install -e './[mssql,dev]'
-	@echo "Project built successfully for mssql"
+# build_for_mysql:
+# 	@echo "Building project for mysql"
+# 	uv pip install -e './[mysql,dev]'
+# 	@echo "Project built successfully for mysql"
 
 clean:
 	@echo "Cleaning up dependencies..."
