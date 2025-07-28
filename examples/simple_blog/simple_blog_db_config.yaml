@@ -5,7 +5,7 @@ databases:
     USER: 'blog_user'
     PASSWORD: 'blog_password'
     HOST: 'localhost'
-    PORT: '5439'
+    PORT: '5432'
 
 output_dir: "./simple_blog_api"
 

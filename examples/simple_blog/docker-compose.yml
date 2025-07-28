@@ -9,7 +9,7 @@ services:
       POSTGRES_USER: blog_user
       POSTGRES_PASSWORD: blog_password
     ports:
-      - "5439:5432"
+      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./simple_blog.sql:/docker-entrypoint-initdb.d/01-init.sql
