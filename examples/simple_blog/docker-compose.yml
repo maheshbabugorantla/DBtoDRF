@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: simple_blog_db
+    environment:
+      POSTGRES_DB: simple_blog
+      POSTGRES_USER: blog_user
+      POSTGRES_PASSWORD: blog_password
+    ports:
+      - "5439:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./simple_blog.sql:/docker-entrypoint-initdb.d/01-init.sql
+      - ./test_data.sql:/docker-entrypoint-initdb.d/02-test-data.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U blog_user -d simple_blog"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:

@@ -1,0 +1,39 @@
+databases:
+  default:
+    ENGINE: 'django.db.backends.postgresql'
+    NAME: 'simple_blog'
+    USER: 'blog_user'
+    PASSWORD: 'blog_password'
+    HOST: 'localhost'
+    PORT: '5439'
+
+output_dir: "./simple_blog_api"
+
+# Django project and app naming
+project_name: "simple_blog_api_django"
+app_name: "simple_blog_api"
+
+# Relationship style for serializers ('pk', 'link', 'nested' - implement 'pk' first)
+relation_style: "pk"
+
+# OpenAPI Specification Info
+openapi_title: "Simple Blog API"
+openapi_version: "1.0.0"
+openapi_description: "A simple blog API generated from database schema using Django introspection."
+openapi_server_url: "http://localhost:8000/api/"
+
+# Generate schemathesis tests for API validation
+generate_schemathesis_tests: false
+
+exclude_tables:
+  - django_migrations
+  - django_admin_log
+  - django_content_type
+  - django_session
+  - auth_group
+  - auth_group_permissions
+  - auth_user_user_permissions
+  - authtoken_token
+  - auth_permission
+  - auth_user
+  - auth_user_groups
