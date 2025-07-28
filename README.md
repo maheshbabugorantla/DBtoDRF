@@ -1,4 +1,4 @@
-# 🚀 DRF Auto Generator
+# 🚀 Generate Django RESTful API from a relational database schema
 
 [![Python](https://img.shields.io/badge/python-3.10+-blue.svg)](https://python.org)
 [![Django](https://img.shields.io/badge/django-5.2+-green.svg)](https://djangoproject.com)
