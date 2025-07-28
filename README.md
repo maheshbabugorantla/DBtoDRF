@@ -243,38 +243,6 @@ The generator automatically detects and creates:
 - **One-to-One** → `OneToOneField` relationships
 - **Self-referential** → Self-referencing relationships with appropriate `related_name`
 
-### Testing Integration
-
-Generated projects include comprehensive test suites:
-
-```python
-# Property-based API testing with Schemathesis
-@schema.parametrize()
-def test_api_endpoints_against_schema(case):
-    """Test all endpoints against OpenAPI schema"""
-    case.call_and_validate()
-
-# Per-model CRUD testing
-class UserAPITests(APITestCase):
-    def test_user_crud_operations(self):
-        # Comprehensive CRUD testing
-        pass
-```
-
-Run tests:
-
-```bash
-# Run all tests
-python -m pytest tests/ -v
-
-# Run property-based tests only
-python tests/test_schemathesis_integration.py
-
-# Run with coverage
-coverage run -m pytest tests/
-coverage report
-```
-
 ---
 
 ## 🤝 Contributing
