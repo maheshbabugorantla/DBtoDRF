@@ -47,16 +47,6 @@ def main():
         help="Directory to generate the Django project in. Overrides config file setting.",
     )
     parser.add_argument(
-        "--tables",
-        nargs="+",
-        help="Specific tables to include (space-separated). Overrides config file setting.",
-    )
-    parser.add_argument(
-        "--exclude-tables",
-        nargs="+",
-        help="Tables to exclude (space-separated). Overrides config file setting.",
-    )
-    parser.add_argument(
         "-v",
         "--verbose",
         action="store_true",
@@ -67,14 +57,6 @@ def main():
         action="store_true",
         help="Disable colored output (useful for CI/CD environments).",
     )
-    # Add AST-based code generation option (defaults to True to use AST)
-    parser.add_argument(
-        "--use-ast",
-        action="store_true",
-        default=True,
-        help="Use AST-based code generation (default) instead of template-based.",
-    )
-    # Add more CLI overrides if needed (e.g., --project-name, --app-name)
 
     args = parser.parse_args()
 
