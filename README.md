@@ -60,6 +60,12 @@ The easiest way to try DRF Auto Generator is with our pre-configured blog exampl
 git clone https://github.com/maheshbabugorantla/drf-auto-generator.git
 cd drf-auto-generator
 
+# Setup the virtualenv for the project using uv
+uv venv .venv && source .venv/bin/activate
+
+# Install the tool
+make build_for_postgres
+
 # Navigate to the simple blog example
 cd examples/simple_blog
 
@@ -73,19 +79,14 @@ simple_blog_db      postgres:17-alpine   "docker-entrypoint.s…"   postgres    
 
 # Wait for database to be ready (check with docker-compose ps)
 
-# Install the tool
-make build_for_postgres
-
 # Generate the Django REST API
 drf-generate -c simple_blog_db_config.yaml
 
 # Navigate to generated project and run it
 cd simple_blog_api
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-python manage.py runserver 8000
-
-# If there is already service running on port 8000. Please choose a different port
+uv venv .venv && source .venv/bin/activate
+(.venv) uv pip install -r requirements.txt
+(.venv) python manage.py runserver 8000 # If there is already service running on port 8000. Please choose a different port
 
 # Replace the port number if other than 8000
 Navigate to http://127.0.0.1:8000/api/schema/swagger-ui/#/
