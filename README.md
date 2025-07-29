@@ -57,8 +57,8 @@ The easiest way to try DRF Auto Generator is with our pre-configured blog exampl
 
 ```bash
 # Clone the repository (if you haven't already)
-git clone https://github.com/maheshbabugorantla/drf-auto-generator.git
-cd drf-auto-generator
+git clone https://github.com/maheshbabugorantla/DBtoDRF.git
+cd DBtoDRF
 
 # Setup the virtualenv for the project using uv
 uv venv --python 3.12 .venv && source .venv/bin/activate
@@ -70,7 +70,7 @@ make build_for_postgres
 cd examples/simple_blog
 
 # Start PostgreSQL with sample blog data
-docker-compose up -f docker-compose.yml -d
+docker-compose -f docker-compose.yml up -d --build
 
 # Keep running the below command until the STATUS show the database as healthy
 docker-compose -f docker-compose.yml ps
