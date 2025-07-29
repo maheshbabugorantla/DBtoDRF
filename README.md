@@ -61,7 +61,7 @@ git clone https://github.com/maheshbabugorantla/drf-auto-generator.git
 cd drf-auto-generator
 
 # Setup the virtualenv for the project using uv
-uv venv .venv && source .venv/bin/activate
+uv venv --python 3.12 .venv && source .venv/bin/activate
 
 # Install the tool
 make build_for_postgres

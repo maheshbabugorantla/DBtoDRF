@@ -17,7 +17,7 @@ name = "drf-auto-generator"
 version = "0.2.0" # Version using Django introspection
 description = "Tool to automatically generate a Django REST Framework API from a database schema using Django introspection."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 license = { text = "MIT" }
 authors = [
     { name = "Mahesh Babu Gorantla", email = "maheshbabugorantla@gmail.com" },
