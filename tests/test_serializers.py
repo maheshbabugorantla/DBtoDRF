@@ -346,8 +346,8 @@ class TestGenerateSerializersCode(unittest.TestCase):
 
         result = generate_serializers_code([self.mock_table], ".models")
 
-        # Verify AST generation was called
-        mock_generate_ast.assert_called_once_with([self.mock_table], ".models")
+        # Verify AST generation was called (now with config=None as third argument)
+        mock_generate_ast.assert_called_once_with([self.mock_table], ".models", None)
 
         # Verify unparse was called with the AST
         mock_unparse.assert_called_once_with(mock_ast_module)
@@ -365,8 +365,8 @@ class TestGenerateSerializersCode(unittest.TestCase):
 
         result = generate_serializers_code([self.mock_table], "custom.models")
 
-        # Verify AST generation was called with custom module
-        mock_generate_ast.assert_called_once_with([self.mock_table], "custom.models")
+        # Verify AST generation was called with custom module (now with config=None as third argument)
+        mock_generate_ast.assert_called_once_with([self.mock_table], "custom.models", None)
 
         # Verify result
         self.assertEqual(result, "custom_generated_code")

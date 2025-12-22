@@ -185,3 +185,66 @@ def create_keyword(arg: str, value: ast.expr) -> ast.keyword:
     node.lineno = 1
     node.col_offset = 0
     return node
+
+
+def create_decorator(decorator_name: str, args: Optional[List[ast.expr]] = None,
+                     keywords: Optional[List[ast.keyword]] = None) -> ast.expr:
+    """Creates an AST node for a decorator with optional arguments."""
+    if args is None and keywords is None:
+        # Simple decorator without parentheses: @decorator_name
+        node = ast.Name(id=decorator_name, ctx=ast.Load())
+    else:
+        # Decorator with arguments: @decorator_name(args, **kwargs)
+        node = ast.Call(
+            func=ast.Name(id=decorator_name, ctx=ast.Load(), lineno=1, col_offset=0),
+            args=args or [],
+            keywords=keywords or []
+        )
+    return add_location(node)
+
+
+def create_function_def(
+    name: str,
+    args: List[str],
+    body: List[ast.stmt],
+    decorators: Optional[List[ast.expr]] = None,
+    returns: Optional[ast.expr] = None
+) -> ast.FunctionDef:
+    """Creates an AST node for a function definition."""
+    # Create arguments
+    func_args = ast.arguments(
+        posonlyargs=[],
+        args=[add_location(ast.arg(arg=arg_name, annotation=None)) for arg_name in args],
+        kwonlyargs=[],
+        kw_defaults=[],
+        defaults=[],
+    )
+    add_location(func_args)
+
+    node = ast.FunctionDef(
+        name=name,
+        args=func_args,
+        body=body,
+        decorator_list=decorators or [],
+        returns=returns
+    )
+    return add_location(node)
+
+
+def create_attribute(obj: str, attr: str) -> ast.Attribute:
+    """Creates an AST node for attribute access (obj.attr)."""
+    node = ast.Attribute(
+        value=ast.Name(id=obj, ctx=ast.Load(), lineno=1, col_offset=0),
+        attr=attr,
+        ctx=ast.Load()
+    )
+    return add_location(node)
+
+
+def create_dict(keys: List[str], values: List[ast.expr]) -> ast.Dict:
+    """Creates an AST Dict node with string keys."""
+    node = ast.Dict(
+        keys=[create_string_constant(k) for k in keys],
+        values=values
+    )
+    return add_location(node)

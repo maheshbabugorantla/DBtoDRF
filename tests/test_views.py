@@ -837,8 +837,8 @@ class TestGenerateViewsCode(unittest.TestCase):
 
         result = generate_views_code([self.mock_table], ".models", ".serializers")
 
-        # Verify AST generation was called
-        mock_generate_ast.assert_called_once_with([self.mock_table], ".models", ".serializers")
+        # Verify AST generation was called (now with config=None as fourth argument)
+        mock_generate_ast.assert_called_once_with([self.mock_table], ".models", ".serializers", None)
 
         # Verify unparse was called with the AST
         mock_unparse.assert_called_once_with(mock_ast_module)
@@ -856,8 +856,8 @@ class TestGenerateViewsCode(unittest.TestCase):
 
         result = generate_views_code([self.mock_table], "custom.models", "custom.serializers")
 
-        # Verify AST generation was called with custom modules
-        mock_generate_ast.assert_called_once_with([self.mock_table], "custom.models", "custom.serializers")
+        # Verify AST generation was called with custom modules (now with config=None as fourth argument)
+        mock_generate_ast.assert_called_once_with([self.mock_table], "custom.models", "custom.serializers", None)
 
         # Verify result
         self.assertEqual(result, "custom_views_code")
