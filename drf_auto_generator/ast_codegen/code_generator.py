@@ -28,7 +28,8 @@ from drf_auto_generator.ast_codegen.project_files import (
     generate_wsgi_code,
     generate_asgi_code,
     generate_manage_py_code,
-    generate_apps_code
+    generate_apps_code,
+    generate_exception_handler_code
 )
 from drf_auto_generator.ast_codegen.schemathesis_tests import generate_schemathesis_tests
 
@@ -52,18 +53,20 @@ class ModelsGenerator(CodeGeneratorStrategy):
         return generate_models_code(tables_info)
 
 class SerializersGenerator(CodeGeneratorStrategy):
-    """Generates DRF serializers code"""
+    """Generates DRF serializers code with relation_style support"""
     def generate_code(self, tables_info: List[TableInfo], **kwargs) -> str:
         models_module = kwargs.get('models_module', '.models')
-        return generate_serializers_code(tables_info, models_module)
+        config = kwargs.get('config', {})
+        return generate_serializers_code(tables_info, models_module, config)
 
 
 class ViewsGenerator(CodeGeneratorStrategy):
-    """Generates DRF views code"""
+    """Generates DRF views code with custom actions for OpenAPI consistency"""
     def generate_code(self, tables_info: List[TableInfo], **kwargs) -> str:
         models_module = kwargs.get('models_module', '.models')
         serializers_module = kwargs.get('serializers_module', '.serializers')
-        return generate_views_code(tables_info, models_module, serializers_module)
+        config = kwargs.get('config', {})
+        return generate_views_code(tables_info, models_module, serializers_module, config)
 
 
 class UrlsGenerator(CodeGeneratorStrategy):
@@ -130,6 +133,12 @@ class InitPyGenerator(CodeGeneratorStrategy):
         return ""
 
 
+class ExceptionHandlerGenerator(CodeGeneratorStrategy):
+    """Generates custom exception handler matching OpenAPI ErrorDetail schema"""
+    def generate_code(self, tables_info: List[TableInfo], **kwargs) -> str:
+        return generate_exception_handler_code()
+
+
 class SchemathesisTestsGenerator(CodeGeneratorStrategy):
     """Generates schemathesis integration tests"""
     def generate_code(self, tables_info: List[TableInfo], **kwargs) -> str:
@@ -166,6 +175,7 @@ class CodeGeneratorFactory:
         'manage_py': ManagePyGenerator,
         'apps': AppsGenerator,
         'init_py': InitPyGenerator,
+        'exception_handlers': ExceptionHandlerGenerator,
         'schemathesis_tests': SchemathesisTestsGenerator,
     }
 
@@ -273,10 +283,11 @@ class CodeGenerator:
 
         # Generate API files
         self.generate_file('models', self.app_path / 'models.py', tables_info)
-        self.generate_file('serializers', self.app_path / 'serializers.py', tables_info)
-        self.generate_file('views', self.app_path / 'views.py', tables_info)
+        self.generate_file('serializers', self.app_path / 'serializers.py', tables_info, config=config)
+        self.generate_file('views', self.app_path / 'views.py', tables_info, config=config)
         self.generate_file('urls', self.app_path / 'urls.py', tables_info)
         self.generate_file('admin', self.app_path / 'admin.py', tables_info)
+        self.generate_file('exception_handlers', self.app_path / 'exception_handlers.py', tables_info)
 
         # Generate test files
         self._generate_test_files(tables_info, config)
