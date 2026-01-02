@@ -383,3 +383,157 @@ class TestMCPGenerator:
         assert "mcp.server" in files["server.py"]
         assert "list_users" in files["tools.py"]
         assert "asyncpg" in files["database.py"]
+
+
+class TestToolboxGenerator:
+    """Tests for Google MCP Toolbox configuration generation."""
+
+    @pytest.fixture
+    def sample_schema(self):
+        """Create a sample database schema for testing."""
+        return DatabaseSchema(
+            tables=[
+                TableSchema(
+                    name="users",
+                    model_name="User",
+                    primary_key_columns=["id"],
+                    columns=[
+                        ColumnSchema(name="id", field_type=FieldType.AUTO, primary_key=True),
+                        ColumnSchema(name="email", field_type=FieldType.EMAIL, max_length=255),
+                        ColumnSchema(name="name", field_type=FieldType.CHAR, max_length=100),
+                    ],
+                ),
+                TableSchema(
+                    name="posts",
+                    model_name="Post",
+                    primary_key_columns=["id"],
+                    columns=[
+                        ColumnSchema(name="id", field_type=FieldType.AUTO, primary_key=True),
+                        ColumnSchema(name="title", field_type=FieldType.CHAR, max_length=200),
+                        ColumnSchema(name="content", field_type=FieldType.TEXT, nullable=True),
+                    ],
+                ),
+            ],
+            database_name="testdb",
+            project_name="test",
+            app_name="api",
+        )
+
+    def test_toolbox_generator(self, sample_schema):
+        """Test Toolbox configuration generation."""
+        from drf_auto_generator.codegen_v2.toolbox import ToolboxGenerator
+
+        generator = ToolboxGenerator(sample_schema)
+        files = generator.generate()
+
+        # Should generate expected files
+        assert "tools.yaml" in files
+        assert ".env.example" in files
+        assert "README.md" in files
+        assert "docker-compose.yaml" in files
+
+    def test_toolbox_yaml_structure(self, sample_schema):
+        """Test the structure of generated tools.yaml."""
+        import yaml
+        from drf_auto_generator.codegen_v2.toolbox import ToolboxGenerator
+
+        generator = ToolboxGenerator(sample_schema)
+        files = generator.generate()
+
+        # Parse the YAML
+        config = yaml.safe_load(files["tools.yaml"])
+
+        # Check sources section
+        assert "sources" in config
+        assert "main-db" in config["sources"]
+        assert config["sources"]["main-db"]["kind"] == "postgres"
+
+        # Check tools section
+        assert "tools" in config
+        tools = config["tools"]
+
+        # Should have CRUD tools for each table
+        assert "list_users" in tools
+        assert "get_users" in tools
+        assert "search_users" in tools
+        assert "create_users" in tools
+        assert "update_users" in tools
+        assert "delete_users" in tools
+
+        assert "list_posts" in tools
+        assert "get_posts" in tools
+
+        # Check tool structure
+        list_tool = tools["list_users"]
+        assert list_tool["kind"] == "postgres-sql"
+        assert "source" in list_tool
+        assert "description" in list_tool
+        assert "parameters" in list_tool
+        assert "statement" in list_tool
+
+        # Check toolsets section
+        assert "toolsets" in config
+        assert "read_only" in config["toolsets"]
+        assert "full_crud" in config["toolsets"]
+        assert "users_tools" in config["toolsets"]
+        assert "posts_tools" in config["toolsets"]
+
+    def test_toolbox_search_tools(self, sample_schema):
+        """Test that search tools are generated for tables with text fields."""
+        import yaml
+        from drf_auto_generator.codegen_v2.toolbox import ToolboxGenerator
+
+        generator = ToolboxGenerator(sample_schema)
+        files = generator.generate()
+        config = yaml.safe_load(files["tools.yaml"])
+
+        # Users has email and name (text fields) - should have search
+        assert "search_users" in config["tools"]
+        search_tool = config["tools"]["search_users"]
+        assert "ILIKE" in search_tool["statement"]
+
+        # Posts has title and content - should have search
+        assert "search_posts" in config["tools"]
+
+    def test_toolbox_mysql_support(self, sample_schema):
+        """Test MySQL database kind support."""
+        import yaml
+        from drf_auto_generator.codegen_v2.toolbox import ToolboxGenerator
+
+        generator = ToolboxGenerator(sample_schema, config={"db_kind": "mysql"})
+        files = generator.generate()
+        config = yaml.safe_load(files["tools.yaml"])
+
+        # Should use mysql kind
+        assert config["sources"]["main-db"]["kind"] == "mysql"
+
+        # Tools should use mysql-sql kind
+        assert config["tools"]["list_users"]["kind"] == "mysql-sql"
+
+    def test_toolbox_env_example(self, sample_schema):
+        """Test .env.example generation."""
+        from drf_auto_generator.codegen_v2.toolbox import ToolboxGenerator
+
+        generator = ToolboxGenerator(sample_schema)
+        files = generator.generate()
+
+        env_content = files[".env.example"]
+        assert "DB_HOST" in env_content
+        assert "DB_PORT" in env_content
+        assert "DB_NAME" in env_content
+        assert "DB_USER" in env_content
+        assert "DB_PASSWORD" in env_content
+
+    def test_toolbox_readme_content(self, sample_schema):
+        """Test README.md content."""
+        from drf_auto_generator.codegen_v2.toolbox import ToolboxGenerator
+
+        generator = ToolboxGenerator(sample_schema)
+        files = generator.generate()
+
+        readme = files["README.md"]
+        assert "MCP Toolbox" in readme
+        assert "users" in readme
+        assert "posts" in readme
+        assert "Claude Desktop" in readme
+        assert "docker" in readme.lower()

@@ -16,6 +16,7 @@ from .converter import convert_tables_to_schema
 from .base import default_registry, CodeGenerator
 from .django import DjangoGenerator
 from .mcp import MCPServerGenerator
+from .toolbox import ToolboxGenerator
 
 logger = logging.getLogger(__name__)
 
@@ -193,6 +194,43 @@ def generate_mcp_server(
         config=full_config,
     )
     return results.get("mcp", [])
+
+
+def generate_toolbox_config(
+    tables: list[LegacyTableInfo],
+    output_dir: str,
+    database_name: Optional[str] = None,
+    db_kind: str = "postgresql",
+    config: Optional[dict[str, Any]] = None,
+) -> list[Path]:
+    """
+    Convenience function to generate Google MCP Toolbox configuration.
+
+    Args:
+        tables: List of TableInfo objects from database introspection
+        output_dir: Directory to write generated files
+        database_name: Database name
+        db_kind: Database type (postgresql, mysql, alloydb, cloudsql-postgres, etc.)
+        config: Optional additional configuration
+
+    Returns:
+        List of generated file paths
+    """
+    full_config = {
+        "db_kind": db_kind,
+        **(config or {}),
+    }
+
+    results = generate_from_tables(
+        tables=tables,
+        output_dir=output_dir,
+        project_name="toolbox",
+        app_name="tools",
+        database_name=database_name,
+        generators=["toolbox"],
+        config=full_config,
+    )
+    return results.get("toolbox", [])
 
 
 def list_generators() -> list[dict[str, str]]:
