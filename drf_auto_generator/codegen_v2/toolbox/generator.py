@@ -295,6 +295,122 @@ class ToolboxGenerator(ProjectGenerator):
             "statement": f"DELETE FROM {table_name} WHERE {pk_col} = $1 RETURNING *;",
         }
 
+        # Generate filter tools for indexed columns
+        tools.update(self._generate_index_filter_tools(table))
+
+        return tools
+
+    def _generate_index_filter_tools(self, table: TableSchema) -> dict[str, Any]:
+        """Generate filter tools based on table indexes for optimized lookups."""
+        tools = {}
+        table_name = table.name
+        model_name = table.model_name
+        pk_col = table.pk_column or table.primary_key_columns[0]
+
+        # Track which columns we've already created filters for
+        filtered_columns: set[str] = {pk_col}  # PK already has get_ tool
+
+        for index in table.indexes:
+            # Skip if this is the primary key index
+            if len(index.fields) == 1 and index.fields[0] in filtered_columns:
+                continue
+
+            # Single-column index: create a simple filter tool
+            if len(index.fields) == 1:
+                col_name = index.fields[0]
+                if col_name in filtered_columns:
+                    continue
+                filtered_columns.add(col_name)
+
+                col = table.get_column(col_name)
+                col_type = self._get_param_type(table, col_name) if col else "string"
+
+                tool_name = f"filter_{table_name}_by_{col_name}"
+                tools[tool_name] = {
+                    "kind": f"{self.db_kind}-sql",
+                    "source": self.source_name,
+                    "description": f"Filter {model_name} records by {col_name} (indexed for fast lookup).",
+                    "parameters": [
+                        {
+                            "name": col_name,
+                            "type": col_type,
+                            "description": f"The {col_name} value to filter by",
+                        },
+                        {
+                            "name": "limit",
+                            "type": "integer",
+                            "description": "Maximum number of records to return (default: 100)",
+                        },
+                    ],
+                    "statement": f"SELECT * FROM {table_name} WHERE {col_name} = $1 LIMIT COALESCE($2, 100);",
+                }
+
+            # Multi-column (composite) index: create a combined filter tool
+            else:
+                # Create a unique tool name from all columns
+                cols_suffix = "_and_".join(index.fields[:3])  # Limit to 3 for readability
+                tool_name = f"filter_{table_name}_by_{cols_suffix}"
+
+                # Skip if we already have this exact filter
+                if tool_name in tools:
+                    continue
+
+                params = []
+                conditions = []
+                for i, col_name in enumerate(index.fields):
+                    col = table.get_column(col_name)
+                    col_type = self._get_param_type(table, col_name) if col else "string"
+                    params.append({
+                        "name": col_name,
+                        "type": col_type,
+                        "description": f"The {col_name} value to filter by",
+                    })
+                    conditions.append(f"{col_name} = ${i + 1}")
+
+                # Add limit parameter
+                params.append({
+                    "name": "limit",
+                    "type": "integer",
+                    "description": "Maximum number of records to return (default: 100)",
+                })
+
+                where_clause = " AND ".join(conditions)
+                limit_param = f"${len(index.fields) + 1}"
+
+                tools[tool_name] = {
+                    "kind": f"{self.db_kind}-sql",
+                    "source": self.source_name,
+                    "description": f"Filter {model_name} records by {', '.join(index.fields)} (composite index for fast lookup).",
+                    "parameters": params,
+                    "statement": f"SELECT * FROM {table_name} WHERE {where_clause} LIMIT COALESCE({limit_param}, 100);",
+                }
+
+        # Also create filter tools for foreign key columns (often indexed)
+        for rel in table.relationships:
+            if rel.source_column and rel.source_column not in filtered_columns:
+                filtered_columns.add(rel.source_column)
+                col_name = rel.source_column
+
+                tool_name = f"filter_{table_name}_by_{col_name}"
+                tools[tool_name] = {
+                    "kind": f"{self.db_kind}-sql",
+                    "source": self.source_name,
+                    "description": f"Filter {model_name} records by {col_name} (foreign key to {rel.target_table}).",
+                    "parameters": [
+                        {
+                            "name": col_name,
+                            "type": "integer",
+                            "description": f"The {col_name} value (references {rel.target_table})",
+                        },
+                        {
+                            "name": "limit",
+                            "type": "integer",
+                            "description": "Maximum number of records to return (default: 100)",
+                        },
+                    ],
+                    "statement": f"SELECT * FROM {table_name} WHERE {col_name} = $1 LIMIT COALESCE($2, 100);",
+                }
+
         return tools
 
     def _generate_toolsets(self) -> dict[str, list[str]]:
@@ -312,6 +428,8 @@ class ToolboxGenerator(ProjectGenerator):
             ])
             if table.get_searchable_fields():
                 all_tools.append(f"search_{table.name}")
+            # Add index-based filter tools
+            all_tools.extend(self._get_index_filter_tool_names(table))
 
         toolsets["read_only"] = all_tools
 
@@ -335,6 +453,8 @@ class ToolboxGenerator(ProjectGenerator):
             ]
             if table.get_searchable_fields():
                 table_tools.append(f"search_{table.name}")
+            # Add index-based filter tools for this table
+            table_tools.extend(self._get_index_filter_tool_names(table))
             table_tools.extend([
                 f"create_{table.name}",
                 f"update_{table.name}",
@@ -343,6 +463,32 @@ class ToolboxGenerator(ProjectGenerator):
             toolsets[f"{table.name}_tools"] = table_tools
 
         return toolsets
+
+    def _get_index_filter_tool_names(self, table: TableSchema) -> list[str]:
+        """Get the names of index-based filter tools for a table."""
+        tool_names = []
+        table_name = table.name
+        pk_col = table.pk_column or table.primary_key_columns[0]
+        filtered_columns: set[str] = {pk_col}
+
+        # Index-based filter tools
+        for index in table.indexes:
+            if len(index.fields) == 1:
+                col_name = index.fields[0]
+                if col_name not in filtered_columns:
+                    filtered_columns.add(col_name)
+                    tool_names.append(f"filter_{table_name}_by_{col_name}")
+            else:
+                cols_suffix = "_and_".join(index.fields[:3])
+                tool_names.append(f"filter_{table_name}_by_{cols_suffix}")
+
+        # Foreign key filter tools
+        for rel in table.relationships:
+            if rel.source_column and rel.source_column not in filtered_columns:
+                filtered_columns.add(rel.source_column)
+                tool_names.append(f"filter_{table_name}_by_{rel.source_column}")
+
+        return tool_names
 
     def _get_insert_columns(self, table: TableSchema) -> tuple[list[str], list[dict]]:
         """Get columns and parameters for INSERT operations."""

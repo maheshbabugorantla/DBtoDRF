@@ -12,6 +12,7 @@ from drf_auto_generator.codegen_v2 import (
     TableSchema,
     ColumnSchema,
     RelationshipSchema,
+    IndexSchema,
     FieldType,
     RelationshipType,
 )
@@ -537,3 +538,111 @@ class TestToolboxGenerator:
         assert "posts" in readme
         assert "Claude Desktop" in readme
         assert "docker" in readme.lower()
+
+    def test_toolbox_index_filter_tools(self):
+        """Test that filter tools are generated for indexed columns."""
+        import yaml
+        from drf_auto_generator.codegen_v2.toolbox import ToolboxGenerator
+
+        # Create schema with indexes
+        schema = DatabaseSchema(
+            tables=[
+                TableSchema(
+                    name="orders",
+                    model_name="Order",
+                    primary_key_columns=["order_id"],
+                    columns=[
+                        ColumnSchema(name="order_id", field_type=FieldType.AUTO, primary_key=True),
+                        ColumnSchema(name="customer_id", field_type=FieldType.INTEGER),
+                        ColumnSchema(name="status", field_type=FieldType.CHAR, max_length=20),
+                        ColumnSchema(name="order_date", field_type=FieldType.DATE),
+                        ColumnSchema(name="total", field_type=FieldType.DECIMAL),
+                    ],
+                    indexes=[
+                        IndexSchema(name="idx_orders_customer", fields=["customer_id"]),
+                        IndexSchema(name="idx_orders_status", fields=["status"]),
+                        IndexSchema(name="idx_orders_date_status", fields=["order_date", "status"]),
+                    ],
+                ),
+            ],
+            database_name="testdb",
+            project_name="test",
+            app_name="api",
+        )
+
+        generator = ToolboxGenerator(schema)
+        files = generator.generate()
+        config = yaml.safe_load(files["tools.yaml"])
+        tools = config["tools"]
+
+        # Should have filter tools for indexed columns
+        assert "filter_orders_by_customer_id" in tools
+        assert "filter_orders_by_status" in tools
+        assert "filter_orders_by_order_date_and_status" in tools
+
+        # Check filter tool structure
+        filter_tool = tools["filter_orders_by_customer_id"]
+        assert filter_tool["kind"] == "postgres-sql"
+        assert "WHERE customer_id = $1" in filter_tool["statement"]
+        assert "(indexed for fast lookup)" in filter_tool["description"]
+
+        # Check composite index filter tool
+        composite_tool = tools["filter_orders_by_order_date_and_status"]
+        assert "WHERE order_date = $1 AND status = $2" in composite_tool["statement"]
+        assert "(composite index" in composite_tool["description"]
+
+        # Filter tools should be in read_only toolset
+        assert "filter_orders_by_customer_id" in config["toolsets"]["read_only"]
+        assert "filter_orders_by_status" in config["toolsets"]["read_only"]
+
+    def test_toolbox_foreign_key_filter_tools(self):
+        """Test that filter tools are generated for foreign key columns."""
+        import yaml
+        from drf_auto_generator.codegen_v2.toolbox import ToolboxGenerator
+
+        schema = DatabaseSchema(
+            tables=[
+                TableSchema(
+                    name="rentals",
+                    model_name="Rental",
+                    primary_key_columns=["rental_id"],
+                    columns=[
+                        ColumnSchema(name="rental_id", field_type=FieldType.AUTO, primary_key=True),
+                        ColumnSchema(name="film_id", field_type=FieldType.INTEGER),
+                        ColumnSchema(name="customer_id", field_type=FieldType.INTEGER),
+                        ColumnSchema(name="rental_date", field_type=FieldType.DATETIME),
+                    ],
+                    relationships=[
+                        RelationshipSchema(
+                            name="film",
+                            type=RelationshipType.MANY_TO_ONE,
+                            target_table="films",
+                            source_column="film_id",
+                        ),
+                        RelationshipSchema(
+                            name="customer",
+                            type=RelationshipType.MANY_TO_ONE,
+                            target_table="customers",
+                            source_column="customer_id",
+                        ),
+                    ],
+                ),
+            ],
+            database_name="testdb",
+            project_name="test",
+            app_name="api",
+        )
+
+        generator = ToolboxGenerator(schema)
+        files = generator.generate()
+        config = yaml.safe_load(files["tools.yaml"])
+        tools = config["tools"]
+
+        # Should have filter tools for FK columns
+        assert "filter_rentals_by_film_id" in tools
+        assert "filter_rentals_by_customer_id" in tools
+
+        # Check FK filter tool structure
+        film_filter = tools["filter_rentals_by_film_id"]
+        assert "(foreign key to films)" in film_filter["description"]
+        assert "WHERE film_id = $1" in film_filter["statement"]
