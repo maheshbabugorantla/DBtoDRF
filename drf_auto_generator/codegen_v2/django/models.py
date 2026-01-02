@@ -15,6 +15,7 @@ from ..schema import (
     RelationshipSchema,
     RelationshipType,
     FieldType,
+    _SINGULARIZATION_EXCEPTIONS,
 )
 
 logger = logging.getLogger(__name__)
@@ -132,7 +133,9 @@ class ModelsGenerator:
         with b.class_("Meta"):
             b.line(f'db_table = "{table.name}"')
             b.line(f'verbose_name = "{table.model_name}"')
-            b.line(f'verbose_name_plural = "{table.model_name}s"')
+            b.line(f'verbose_name_plural = "{self._get_plural_name(table.model_name)}"')
+            # Use managed=False for existing databases
+            b.line("managed = False")
 
             # Add unique_together for M2M through tables
             if table.has_composite_pk and table.is_m2m_through_table:
@@ -235,8 +238,42 @@ class ModelsGenerator:
         p = inflect.engine()
         words = table_name.split('_')
         pascal = ''.join(word.capitalize() for word in words)
+
+        # Check for singularization exceptions first
+        if pascal in _SINGULARIZATION_EXCEPTIONS:
+            return _SINGULARIZATION_EXCEPTIONS[pascal]
+
+        # Try to singularize (users -> User)
         singular = p.singular_noun(pascal)
-        return singular if singular else pascal
+        # Only use singularized form if it looks valid
+        if singular and len(singular) >= len(pascal) - 2:
+            return singular
+        return pascal
+
+    def _get_plural_name(self, model_name: str) -> str:
+        """Get the plural form of a model name for verbose_name_plural."""
+        import inflect
+        p = inflect.engine()
+
+        # Common pluralization rules
+        if model_name.endswith('y'):
+            # Category -> Categories, but not if preceded by vowel
+            if len(model_name) > 1 and model_name[-2] not in 'aeiouAEIOU':
+                return model_name[:-1] + 'ies'
+        elif model_name.endswith(('s', 'x', 'z', 'ch', 'sh')):
+            return model_name + 'es'
+        elif model_name.endswith('f'):
+            return model_name[:-1] + 'ves'
+        elif model_name.endswith('fe'):
+            return model_name[:-2] + 'ves'
+
+        # Try inflect library
+        plural = p.plural_noun(model_name)
+        if plural:
+            return plural
+
+        # Default: just add 's'
+        return model_name + 's'
 
     def _format_field_options(self, options: dict[str, Any]) -> str:
         """Format field options as a string for code generation."""

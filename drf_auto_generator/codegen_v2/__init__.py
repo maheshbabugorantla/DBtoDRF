@@ -22,6 +22,7 @@ from .schema import (
     ConstraintSchema,
     FieldType,
     RelationshipType,
+    _SINGULARIZATION_EXCEPTIONS,
 )
 from .code_builder import PythonCodeBuilder
 from .base import CodeGenerator, GeneratorRegistry

@@ -15,6 +15,30 @@ import inflect
 
 _inflect_engine = inflect.engine()
 
+# Field types that support max_length option
+_MAX_LENGTH_FIELD_TYPES = {
+    "CharField",
+    "EmailField",
+    "URLField",
+    "SlugField",
+}
+
+# Words that should not be singularized (already singular or exceptions)
+_SINGULARIZATION_EXCEPTIONS = {
+    "Address": "Address",
+    "Status": "Status",
+    "News": "News",
+    "Series": "Series",
+    "Species": "Species",
+    "Analysis": "Analysis",
+    "Basis": "Basis",
+    "Diagnosis": "Diagnosis",
+    "Synthesis": "Synthesis",
+    "Hypothesis": "Hypothesis",
+    "Crisis": "Crisis",
+    "Axis": "Axis",
+}
+
 
 class FieldType(str, Enum):
     """Database/Django field types."""
@@ -133,9 +157,10 @@ class ColumnSchema(BaseModel):
         if self.unique and not self.primary_key:
             options["unique"] = True
 
-        # Size constraints
-        if self.max_length is not None:
-            options["max_length"] = self.max_length
+        # Size constraints - only for field types that support max_length
+        if self.max_length is not None and self.max_length > 0:
+            if self.field_type.value in _MAX_LENGTH_FIELD_TYPES:
+                options["max_length"] = self.max_length
         if self.max_digits is not None:
             options["max_digits"] = self.max_digits
         if self.decimal_places is not None:
@@ -266,9 +291,18 @@ class TableSchema(BaseModel):
             # Convert snake_case to PascalCase and singularize
             words = self.name.split('_')
             pascal = ''.join(word.capitalize() for word in words)
-            # Try to singularize (users -> User)
-            singular = _inflect_engine.singular_noun(pascal)
-            object.__setattr__(self, 'model_name', singular if singular else pascal)
+
+            # Check for singularization exceptions first
+            if pascal in _SINGULARIZATION_EXCEPTIONS:
+                object.__setattr__(self, 'model_name', _SINGULARIZATION_EXCEPTIONS[pascal])
+            else:
+                # Try to singularize (users -> User)
+                singular = _inflect_engine.singular_noun(pascal)
+                # Only use singularized form if it looks valid (not too short)
+                if singular and len(singular) >= len(pascal) - 2:
+                    object.__setattr__(self, 'model_name', singular)
+                else:
+                    object.__setattr__(self, 'model_name', pascal)
 
     @property
     def has_composite_pk(self) -> bool:
