@@ -219,6 +219,85 @@ my_api/
 
 ## ⚡ Advanced Usage
 
+### CodeGen V2: Next-Generation Code Generation
+
+CodeGen V2 is a new, cleaner code generation architecture that provides:
+
+- **CodeBuilder Pattern** - Context managers for Python code generation with automatic indentation
+- **Pydantic IR** - Type-safe Intermediate Representation for database schemas
+- **Plugin Architecture** - Extensible generators for different output formats
+- **Multiple Outputs** - Django REST Framework, MCP Servers, Google Toolbox
+
+#### Available Generators
+
+| Generator | Output | Description |
+|-----------|--------|-------------|
+| `django` | Python | Django REST Framework project (models, serializers, views, urls) |
+| `mcp` | Python | MCP Server for AI assistants (Claude, etc.) |
+| `toolbox` | YAML | Google MCP Toolbox for Databases configuration |
+
+#### Using CodeGen V2 Programmatically
+
+```python
+from drf_auto_generator.codegen_v2 import (
+    DatabaseSchema, TableSchema, ColumnSchema, IndexSchema,
+    FieldType, RelationshipType
+)
+from drf_auto_generator.codegen_v2.main import generate_from_tables
+
+# Generate Django + MCP Server + Toolbox config
+results = generate_from_tables(
+    tables=introspected_tables,
+    output_dir="./output",
+    project_name="my_api",
+    database_name="mydb",
+    generators=["django", "mcp", "toolbox"],
+)
+```
+
+### Google MCP Toolbox for Databases
+
+Generate YAML configuration for [Google's MCP Toolbox](https://github.com/googleapis/genai-toolbox):
+
+```python
+from drf_auto_generator.codegen_v2.main import generate_toolbox_config
+
+generate_toolbox_config(
+    tables=tables,
+    output_dir="./toolbox",
+    database_name="pagila",
+    db_kind="postgresql",  # postgresql, mysql, alloydb, cloudsql-postgres, bigquery
+)
+```
+
+**Generated tools include:**
+- `list_{table}` - Paginated listing
+- `get_{table}` - Get by primary key
+- `search_{table}` - Text search on indexed text fields
+- `filter_{table}_by_{column}` - Filter by indexed columns (auto-detected)
+- `create_{table}`, `update_{table}`, `delete_{table}` - CRUD operations
+- `describe_schema` - Schema introspection
+
+**Toolsets for access control:**
+- `read_only` - Safe for most AI agents
+- `full_crud` - All operations including mutations
+- `{table}_tools` - All tools for a specific table
+
+### MCP Server Generation
+
+Generate a Python MCP server for AI assistants:
+
+```python
+from drf_auto_generator.codegen_v2.main import generate_mcp_server
+
+generate_mcp_server(
+    tables=tables,
+    output_dir="./mcp_server",
+    server_name="my-db-mcp",
+    database_name="mydb",
+)
+```
+
 ### Custom Field Mapping
 
 The generator intelligently maps database types to Django fields:
